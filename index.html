@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<title>Legado Integral · Registro de Turno</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  :root{
+    --oro:#8B653D; --oro-claro:#C8AA82; --teal:#468282; --crema:#F5F2EE; --gris:#2D2D2D;
+    --ok:#2E7D4F; --warn:#B7550A; --err:#B23B3B;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--crema);color:var(--gris);font-family:'Inter',sans-serif;-webkit-tap-highlight-color:transparent;}
+  h1,h2,h3{font-family:'Playfair Display',serif;margin:0;}
+  #app{max-width:480px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column;}
+
+  header.top{display:flex;align-items:center;gap:12px;padding:18px 20px 14px;border-bottom:1px solid #E4DDD1;background:#fff;}
+  header.top .mark{width:38px;height:38px;flex:none;}
+  header.top .word{line-height:1.1;}
+  header.top .word b{color:var(--oro);}
+  header.top .word span{color:var(--teal);}
+  header.top .word{font-size:19px;font-weight:700;font-family:'Playfair Display',serif;}
+  header.top small{display:block;color:#8a8378;font-size:11px;font-family:'Inter',sans-serif;font-weight:500;letter-spacing:.02em;}
+
+  main{flex:1;padding:20px;}
+  .card{background:#fff;border:1px solid #E4DDD1;border-radius:14px;padding:18px;margin-bottom:14px;}
+  .field{margin-bottom:14px;}
+  .field label{display:block;font-size:12px;font-weight:600;color:#6b645a;margin-bottom:6px;letter-spacing:.02em;text-transform:uppercase;}
+  select,input[type=password],input[type=text]{width:100%;padding:12px 14px;border:1.5px solid #DCD3C4;border-radius:10px;font-size:16px;font-family:'Inter',sans-serif;background:#fff;color:var(--gris);}
+  select:focus,input:focus{outline:none;border-color:var(--teal);}
+  button.primary{width:100%;padding:14px;border:none;border-radius:10px;background:var(--oro);color:#fff;font-size:15px;font-weight:600;font-family:'Inter',sans-serif;cursor:pointer;}
+  button.primary:active{background:#725328;}
+  button.primary:disabled{background:#cabfa9;}
+  button.secondary{width:100%;padding:12px;border:1.5px solid var(--teal);border-radius:10px;background:#fff;color:var(--teal);font-size:14px;font-weight:600;cursor:pointer;}
+  .msg{font-size:13px;padding:10px 12px;border-radius:8px;margin-bottom:12px;}
+  .msg.err{background:#FBE9E7;color:var(--err);}
+  .msg.ok{background:#E7F3EC;color:var(--ok);}
+  .msg.warn{background:#FCEFE2;color:var(--warn);}
+
+  nav.tabs{display:flex;background:#fff;border-bottom:1px solid #E4DDD1;}
+  nav.tabs button{flex:1;padding:14px 0;background:none;border:none;font-family:'Inter',sans-serif;font-weight:600;font-size:13.5px;color:#9a9285;border-bottom:3px solid transparent;cursor:pointer;}
+  nav.tabs button.active{color:var(--oro);border-bottom-color:var(--oro);}
+
+  #reader{width:100%;border-radius:14px;overflow:hidden;border:1px solid #E4DDD1;}
+  .hint{font-size:12.5px;color:#8a8378;text-align:center;margin:10px 0 4px;}
+
+  .review-row{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #F0EAE0;font-size:14px;}
+  .review-row:last-child{border-bottom:none;}
+  .review-row span.k{color:#8a8378;}
+  .review-row span.v{font-weight:600;}
+
+  .bono{display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid #F0EAE0;}
+  .bono:last-child{border-bottom:none;}
+  .bono .nombre{font-size:14px;font-weight:500;}
+  .bono .monto{font-size:14px;font-weight:700;padding:3px 10px;border-radius:20px;}
+  .bono .monto.ganado{background:#E7F3EC;color:var(--ok);}
+  .bono .monto.no{background:#F3EEE6;color:#a89f8f;}
+
+  .banner-gold{background:linear-gradient(135deg,#C8AA82,#8B653D);color:#fff;border-radius:14px;padding:16px 18px;margin-bottom:14px;text-align:center;}
+  .banner-gold b{display:block;font-family:'Playfair Display',serif;font-size:16px;margin-bottom:2px;}
+
+  ul.puntos{list-style:none;margin:0;padding:0;}
+  ul.puntos li{display:flex;gap:8px;font-size:13.5px;padding:7px 0;border-bottom:1px solid #F0EAE0;line-height:1.4;}
+  ul.puntos li:last-child{border-bottom:none;}
+  ul.puntos li.favor::before{content:"✓";color:var(--ok);font-weight:700;}
+  ul.puntos li.oportunidad::before{content:"◦";color:var(--warn);font-weight:700;}
+
+  h3.section{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:#8a8378;margin-bottom:10px;font-family:'Inter',sans-serif;font-weight:700;}
+  .loading{text-align:center;padding:30px 10px;color:#8a8378;font-size:14px;}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header class="top">
+    <svg class="mark" viewBox="0 0 40 40">
+      <circle cx="20" cy="20" r="17.5" fill="none" stroke="#8B653D" stroke-width="2.2"/>
+      <path d="M20 8 C15 14, 15 18, 20 21 C25 18, 25 14, 20 8 Z" fill="#8B653D"/>
+      <line x1="6" y1="24" x2="34" y2="24" stroke="#C8AA82" stroke-width="1.6"/>
+      <circle cx="12" cy="30" r="2" fill="#468282"/>
+      <circle cx="20" cy="32" r="2" fill="#468282"/>
+      <circle cx="28" cy="30" r="2" fill="#468282"/>
+      <line x1="12" y1="30" x2="20" y2="32" stroke="#468282" stroke-width="1.2"/>
+      <line x1="20" y1="32" x2="28" y2="30" stroke="#468282" stroke-width="1.2"/>
+    </svg>
+    <div class="word"><b>Legado</b> <span>Integral</span><small>Registro de turno · Excelencia Operativa</small></div>
+  </header>
+
+  <!-- ===================== LOGIN ===================== -->
+  <main id="screen-login">
+    <div class="card">
+      <h2 style="font-size:18px;margin-bottom:4px;">Iniciar turno</h2>
+      <p style="font-size:13px;color:#8a8378;margin:4px 0 18px;">Selecciona tu nombre y captura tu NIP para continuar.</p>
+      <div id="login-msg"></div>
+      <div class="field">
+        <label>Empleado</label>
+        <select id="sel-empleado"><option value="">Cargando lista de empleados…</option></select>
+      </div>
+      <div class="field">
+        <label>NIP</label>
+        <input type="password" id="in-nip" inputmode="numeric" maxlength="6" placeholder="••••">
+      </div>
+      <button class="primary" id="btn-login">Ingresar</button>
+    </div>
+  </main>
+
+  <!-- ===================== APP PRINCIPAL ===================== -->
+  <div id="screen-main" hidden>
+    <nav class="tabs">
+      <button class="active" data-tab="scan">Escanear ticket</button>
+      <button data-tab="progress">Mi progreso</button>
+    </nav>
+
+    <main id="tab-scan">
+      <div id="scan-idle">
+        <p class="hint">Apunta la cámara al código QR del ticket de cierre de caja.</p>
+        <div id="reader"></div>
+      </div>
+
+      <div id="scan-review" class="card" hidden>
+        <h3 class="section">Verifica los datos antes de enviar</h3>
+        <div id="review-body"></div>
+        <div id="review-msg" style="margin-top:10px;"></div>
+        <div style="display:flex;gap:10px;margin-top:14px;">
+          <button class="secondary" id="btn-rescan">Volver a escanear</button>
+          <button class="primary" id="btn-confirm">Confirmar y enviar</button>
+        </div>
+      </div>
+    </main>
+
+    <main id="tab-progress" hidden>
+      <div id="progress-body"><div class="loading">Cargando tu progreso…</div></div>
+    </main>
+  </div>
+
+</div>
+
+<script>
+/* ======================================================================
+   CONFIGURACIÓN — pega aquí la URL de tu implementación de Apps Script
+   (termina en /exec). Ver instrucciones en Codigo_AppsScript_Backend.gs
+   ====================================================================== */
+const APPS_SCRIPT_URL = "PEGA_AQUI_TU_URL_DE_APPS_SCRIPT/exec";
+
+let SESSION = JSON.parse(localStorage.getItem('legado_session') || 'null');
+let html5QrCode = null;
+let ultimoQR = null;
+
+const $ = (sel) => document.querySelector(sel);
+
+// -------------------- Llamadas al backend --------------------
+async function apiGet(params) {
+  const url = APPS_SCRIPT_URL + '?' + new URLSearchParams(params).toString();
+  const res = await fetch(url);
+  return res.json();
+}
+async function apiPost(body) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // evita preflight CORS
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+// -------------------- Login --------------------
+async function cargarEmpleados() {
+  const sel = $('#sel-empleado');
+  try {
+    const r = await apiGet({ action: 'empleados' });
+    if (!r.ok) throw new Error(r.error || 'Error al cargar empleados');
+    sel.innerHTML = '<option value="">Selecciona tu nombre…</option>' +
+      r.empleados.map(e => `<option value="${e.id}">${e.nombre}</option>`).join('');
+  } catch (err) {
+    sel.innerHTML = '<option value="">No se pudo cargar la lista</option>';
+    showMsg('#login-msg', 'No se pudo conectar con el servidor. Revisa tu conexión e intenta de nuevo.', 'err');
+  }
+}
+
+function showMsg(sel, texto, tipo) {
+  $(sel).innerHTML = texto ? `<div class="msg ${tipo}">${texto}</div>` : '';
+}
+
+$('#btn-login').addEventListener('click', async () => {
+  const id = $('#sel-empleado').value;
+  const nip = $('#in-nip').value.trim();
+  if (!id) return showMsg('#login-msg', 'Selecciona tu nombre.', 'err');
+  if (!nip) return showMsg('#login-msg', 'Captura tu NIP.', 'err');
+
+  $('#btn-login').disabled = true;
+  $('#btn-login').textContent = 'Verificando…';
+  const r = await apiGet({ action: 'resumen', id, nip });
+  $('#btn-login').disabled = false;
+  $('#btn-login').textContent = 'Ingresar';
+
+  if (!r.ok) return showMsg('#login-msg', r.error || 'No se pudo iniciar sesión.', 'err');
+
+  SESSION = { id, nip, nombre: r.empleado.nombre };
+  localStorage.setItem('legado_session', JSON.stringify(SESSION));
+  entrarApp();
+});
+
+function entrarApp() {
+  $('#screen-login').hidden = true;
+  $('#screen-main').hidden = false;
+  iniciarEscaner();
+  cargarProgreso();
+}
+
+// -------------------- Tabs --------------------
+document.querySelectorAll('nav.tabs button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('nav.tabs button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    $('#tab-scan').hidden = btn.dataset.tab !== 'scan';
+    $('#tab-progress').hidden = btn.dataset.tab !== 'progress';
+    if (btn.dataset.tab === 'progress') cargarProgreso();
+  });
+});
+
+// -------------------- Escáner QR --------------------
+function iniciarEscaner() {
+  if (html5QrCode) return;
+  html5QrCode = new Html5Qrcode('reader');
+  html5QrCode.start(
+    { facingMode: 'environment' },
+    { fps: 10, qrbox: { width: 240, height: 240 } },
+    onEscaneoExitoso,
+    () => {} // errores de frame individual, se ignoran
+  ).catch(() => {
+    $('#reader').innerHTML = '<p style="padding:16px;font-size:13px;color:#B23B3B;">No se pudo abrir la cámara. Revisa los permisos del navegador.</p>';
+  });
+}
+
+function onEscaneoExitoso(texto) {
+  if (texto === ultimoQR) return; // evita disparar dos veces el mismo frame
+  ultimoQR = texto;
+  let data;
+  try {
+    data = JSON.parse(texto);
+  } catch (e) {
+    showMsg('#review-msg', 'Este código QR no tiene el formato esperado del ticket de cierre.', 'err');
+    return;
+  }
+  mostrarRevision(data);
+}
+
+function mostrarRevision(data) {
+  window.__pendingScan = data;
+  $('#scan-idle').hidden = true;
+  $('#scan-review').hidden = false;
+  showMsg('#review-msg', '', '');
+
+  const filas = [
+    ['Folio', data.folio],
+    ['Empleado', data.id_empleado],
+    ['Fecha del turno', data.fecha],
+    ['Hora apertura', data.hora_apertura],
+    ['Hora cierre', data.hora_cierre],
+    ['Venta del turno', fmtMoney(data.venta_turno)],
+    ['Entregado a admin.', fmtMoney(data.monto_entregado_admin)],
+    ['Inventario vendido', fmtMoney(data.inventario_vendido)],
+    ['Faltante', fmtMoney(data.faltante)],
+    ['Merma', fmtMoney(data.merma)],
+  ];
+  $('#review-body').innerHTML = filas.map(([k, v]) =>
+    `<div class="review-row"><span class="k">${k}</span><span class="v">${v ?? '—'}</span></div>`
+  ).join('');
+
+  if (String(data.id_empleado).trim() !== SESSION.id) {
+    showMsg('#review-msg', 'Este ticket pertenece a otro número de empleado. Verifica que sea tu turno.', 'warn');
+  }
+}
+
+function fmtMoney(n) {
+  if (n === undefined || n === null || n === '') return '—';
+  return '$' + Number(n).toLocaleString('es-MX', { minimumFractionDigits: 2 });
+}
+
+$('#btn-rescan').addEventListener('click', () => {
+  ultimoQR = null;
+  $('#scan-review').hidden = true;
+  $('#scan-idle').hidden = false;
+});
+
+$('#btn-confirm').addEventListener('click', async () => {
+  const data = window.__pendingScan;
+  if (!data) return;
+  $('#btn-confirm').disabled = true;
+  $('#btn-confirm').textContent = 'Enviando…';
+
+  const payload = Object.assign({}, data, { id_empleado: SESSION.id, nip: SESSION.nip });
+  const r = await apiPost(payload);
+
+  $('#btn-confirm').disabled = false;
+  $('#btn-confirm').textContent = 'Confirmar y enviar';
+
+  if (!r.ok) {
+    showMsg('#review-msg', r.error || 'No se pudo registrar el turno.', 'err');
+    return;
+  }
+  showMsg('#review-msg', 'Turno registrado correctamente. ✔', 'ok');
+  setTimeout(() => {
+    ultimoQR = null;
+    $('#scan-review').hidden = true;
+    $('#scan-idle').hidden = false;
+    cargarProgreso();
+  }, 1400);
+});
+
+// -------------------- Mi Progreso --------------------
+async function cargarProgreso() {
+  const cont = $('#progress-body');
+  cont.innerHTML = '<div class="loading">Cargando tu progreso…</div>';
+  const r = await apiGet({ action: 'resumen', id: SESSION.id, nip: SESSION.nip });
+  if (!r.ok) {
+    cont.innerHTML = `<div class="msg err">${r.error || 'No se pudo cargar tu progreso.'}</div>`;
+    return;
+  }
+
+  const s = r.semana, m = r.mes;
+  let html = '';
+
+  if (m.elegible_premio_maximo) {
+    html += `<div class="banner-gold"><b>¡Excelencia total del mes!</b>Ganaste los 4 bonos — día libre / pago doble.</div>`;
+  } else if (m.mensaje) {
+    html += `<div class="msg ok">${m.mensaje}</div>`;
+  }
+
+  html += `<div class="card">
+    <h3 class="section">Esta semana (${s.rango.inicio} al ${s.rango.fin})</h3>
+    <ul class="puntos">
+      ${s.puntos_favor.map(t => `<li class="favor">${t}</li>`).join('')}
+      ${s.areas_oportunidad.map(t => `<li class="oportunidad">${t}</li>`).join('')}
+    </ul>
+  </div>`;
+
+  html += `<div class="card">
+    <h3 class="section">Bonos de ${m.mes}</h3>
+    <div class="bono"><span class="nombre">Bono Ventas (20+ días de meta)</span><span class="monto ${m.bono_ventas ? 'ganado' : 'no'}">$${m.bono_ventas}</span></div>
+    <div class="bono"><span class="nombre">Bono Puntualidad (0 retardos)</span><span class="monto ${m.bono_puntualidad ? 'ganado' : 'no'}">$${m.bono_puntualidad}</span></div>
+    <div class="bono"><span class="nombre">Bono Caja</span><span class="monto ${m.bono_caja ? 'ganado' : 'no'}">$${m.bono_caja}</span></div>
+    <div class="bono"><span class="nombre">Bono Inventario</span><span class="monto ${m.bono_inventario ? 'ganado' : 'no'}">$${m.bono_inventario}</span></div>
+    <div class="bono" style="border-top:1.5px solid #E4DDD1;padding-top:12px;margin-top:4px;"><span class="nombre" style="font-weight:700;">Total del mes</span><span class="monto ganado" style="font-size:16px;">$${m.total_bonos}</span></div>
+  </div>`;
+
+  cont.innerHTML = html;
+}
+
+// -------------------- Arranque --------------------
+cargarEmpleados();
+if (SESSION) entrarApp();
+</script>
+</body>
+</html>
