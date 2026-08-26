@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
 <title>Legado Integral · Registro de Turno</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#8B653D">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Legado Integral">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="icon" href="icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -70,6 +78,17 @@
 
   h3.section{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:#8a8378;margin-bottom:10px;font-family:'Inter',sans-serif;font-weight:700;}
   .loading{text-align:center;padding:30px 10px;color:#8a8378;font-size:14px;}
+
+  .pin-pad{display:flex;flex-direction:column;align-items:center;gap:18px;margin:10px 0;}
+  .pin-dots{display:flex;gap:14px;}
+  .pin-dots .dot{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--oro-claro);background:#fff;transition:background .1s;}
+  .pin-dots .dot.filled{background:var(--oro);border-color:var(--oro);}
+  .pin-keys{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;width:100%;max-width:260px;}
+  .pin-key{padding:16px 0;border:1.5px solid #DCD3C4;border-radius:12px;background:#fff;font-size:20px;font-weight:600;color:var(--gris);cursor:pointer;font-family:'Inter',sans-serif;}
+  .pin-key:active{background:#F0EAE0;}
+  .pin-key-del{font-size:16px;color:var(--err);}
+  .pin-key-empty{border:none;background:none;pointer-events:none;}
+  .lock-avatar{width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#C8AA82,#8B653D);color:#fff;display:flex;align-items:center;justify-content:center;font-family:'Playfair Display',serif;font-size:22px;font-weight:700;margin:0 auto 12px;}
 </style>
 </head>
 <body>
@@ -101,9 +120,28 @@
       </div>
       <div class="field">
         <label>NIP</label>
-        <input type="password" id="in-nip" inputmode="numeric" maxlength="6" placeholder="••••">
+        <div class="pin-pad" id="pin-login">
+          <div class="pin-dots" id="pin-login-dots"></div>
+          <div class="pin-keys" id="pin-login-keys"></div>
+        </div>
       </div>
       <button class="primary" id="btn-login">Ingresar</button>
+    </div>
+  </main>
+
+  <!-- ===================== PANTALLA DE BLOQUEO ===================== -->
+  <main id="screen-lock" hidden>
+    <div class="card" style="text-align:center;">
+      <div class="lock-avatar" id="lock-avatar"></div>
+      <h2 style="font-size:18px;margin-bottom:4px;" id="lock-nombre">Hola de nuevo</h2>
+      <p style="font-size:13px;color:#8a8378;margin:4px 0 18px;">Captura tu NIP para continuar.</p>
+      <div id="lock-msg"></div>
+      <div class="pin-pad" id="pin-lock">
+        <div class="pin-dots" id="pin-lock-dots"></div>
+        <div class="pin-keys" id="pin-lock-keys"></div>
+      </div>
+      <button class="primary" id="btn-unlock" style="margin-top:16px;">Desbloquear</button>
+      <button class="secondary" id="btn-switch-user" style="margin-top:10px;">No soy yo · cambiar de usuario</button>
     </div>
   </main>
 
@@ -133,6 +171,7 @@
 
     <main id="tab-progress" hidden>
       <div id="progress-body"><div class="loading">Cargando tu progreso…</div></div>
+      <button class="secondary" id="btn-logout">Cerrar sesión</button>
     </main>
   </div>
 
@@ -166,6 +205,48 @@ async function apiPost(body) {
   return res.json();
 }
 
+// -------------------- Teclado numérico de NIP --------------------
+function crearPinPad(prefix, maxLen) {
+  const dotsEl = $('#' + prefix + '-dots');
+  const keysEl = $('#' + prefix + '-keys');
+  let value = '';
+  let onChangeCb = null;
+
+  function render() {
+    dotsEl.innerHTML = Array.from({ length: maxLen }, (_, i) =>
+      `<span class="dot ${i < value.length ? 'filled' : ''}"></span>`
+    ).join('');
+  }
+
+  const teclas = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'];
+  keysEl.innerHTML = teclas.map(k => {
+    if (k === '') return '<span class="pin-key-empty"></span>';
+    const cls = k === '⌫' ? 'pin-key pin-key-del' : 'pin-key';
+    return `<button type="button" class="${cls}" data-key="${k}">${k}</button>`;
+  }).join('');
+
+  keysEl.querySelectorAll('.pin-key').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const k = btn.dataset.key;
+      if (k === '⌫') value = value.slice(0, -1);
+      else if (value.length < maxLen) value += k;
+      render();
+      if (onChangeCb) onChangeCb(value);
+    });
+  });
+
+  render();
+
+  return {
+    getValue: () => value,
+    reset: () => { value = ''; render(); },
+    onChange: (cb) => { onChangeCb = cb; },
+  };
+}
+
+const pinLogin = crearPinPad('pin-login', 6);
+const pinLock = crearPinPad('pin-lock', 6);
+
 // -------------------- Login --------------------
 async function cargarEmpleados() {
   const sel = $('#sel-empleado');
@@ -186,7 +267,7 @@ function showMsg(sel, texto, tipo) {
 
 $('#btn-login').addEventListener('click', async () => {
   const id = $('#sel-empleado').value;
-  const nip = $('#in-nip').value.trim();
+  const nip = pinLogin.getValue();
   if (!id) return showMsg('#login-msg', 'Selecciona tu nombre.', 'err');
   if (!nip) return showMsg('#login-msg', 'Captura tu NIP.', 'err');
 
@@ -196,18 +277,74 @@ $('#btn-login').addEventListener('click', async () => {
   $('#btn-login').disabled = false;
   $('#btn-login').textContent = 'Ingresar';
 
-  if (!r.ok) return showMsg('#login-msg', r.error || 'No se pudo iniciar sesión.', 'err');
+  if (!r.ok) {
+    pinLogin.reset();
+    return showMsg('#login-msg', r.error || 'No se pudo iniciar sesión.', 'err');
+  }
 
   SESSION = { id, nip, nombre: r.empleado.nombre };
   localStorage.setItem('legado_session', JSON.stringify(SESSION));
+  pinLogin.reset();
   entrarApp();
 });
 
 function entrarApp() {
   $('#screen-login').hidden = true;
+  $('#screen-lock').hidden = true;
   $('#screen-main').hidden = false;
   iniciarEscaner();
   cargarProgreso();
+}
+
+// -------------------- Bloqueo de sesión --------------------
+function mostrarLock() {
+  $('#screen-login').hidden = true;
+  $('#screen-main').hidden = true;
+  $('#screen-lock').hidden = false;
+  $('#lock-nombre').textContent = SESSION.nombre || 'Hola de nuevo';
+  $('#lock-avatar').textContent = (SESSION.nombre || '?').trim().charAt(0).toUpperCase();
+  showMsg('#lock-msg', '', '');
+  pinLock.reset();
+}
+
+$('#btn-unlock').addEventListener('click', async () => {
+  const nip = pinLock.getValue();
+  if (!nip) return showMsg('#lock-msg', 'Captura tu NIP.', 'err');
+
+  $('#btn-unlock').disabled = true;
+  $('#btn-unlock').textContent = 'Verificando…';
+  const r = await apiGet({ action: 'resumen', id: SESSION.id, nip });
+  $('#btn-unlock').disabled = false;
+  $('#btn-unlock').textContent = 'Desbloquear';
+
+  if (!r.ok) {
+    pinLock.reset();
+    return showMsg('#lock-msg', r.error || 'NIP incorrecto.', 'err');
+  }
+
+  SESSION = { id: SESSION.id, nip, nombre: r.empleado.nombre };
+  localStorage.setItem('legado_session', JSON.stringify(SESSION));
+  entrarApp();
+});
+
+$('#btn-switch-user').addEventListener('click', () => {
+  cerrarSesion();
+});
+
+$('#btn-logout').addEventListener('click', () => {
+  cerrarSesion();
+});
+
+function cerrarSesion() {
+  SESSION = null;
+  localStorage.removeItem('legado_session');
+  pinLock.reset();
+  pinLogin.reset();
+  $('#sel-empleado').value = '';
+  showMsg('#login-msg', '', '');
+  $('#screen-lock').hidden = true;
+  $('#screen-main').hidden = true;
+  $('#screen-login').hidden = false;
 }
 
 // -------------------- Tabs --------------------
@@ -352,7 +489,13 @@ async function cargarProgreso() {
 
 // -------------------- Arranque --------------------
 cargarEmpleados();
-if (SESSION) entrarApp();
+if (SESSION) mostrarLock();
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
+}
 </script>
 </body>
 </html>
