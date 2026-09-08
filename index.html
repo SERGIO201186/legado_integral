@@ -372,6 +372,12 @@ function iniciarEscaner() {
   });
 }
 
+// Versión de esquema del QR de cierre que genera NovaPOS (campo "v"). Solo
+// se usa para avisar si un ticket viene de una versión más nueva de NovaPOS
+// que trajera campos que esta pantalla todavía no sabe mostrar — no bloquea
+// el envío, porque el backend recibe el objeto completo tal cual venga.
+const QR_SCHEMA_VERSION = 1;
+
 function onEscaneoExitoso(texto) {
   if (texto === ultimoQR) return; // evita disparar dos veces el mismo frame
   ultimoQR = texto;
@@ -380,6 +386,10 @@ function onEscaneoExitoso(texto) {
     data = JSON.parse(texto);
   } catch (e) {
     showMsg('#review-msg', 'Este código QR no tiene el formato esperado del ticket de cierre.', 'err');
+    return;
+  }
+  if (!data || typeof data !== 'object' || !data.folio || !data.id_empleado) {
+    showMsg('#review-msg', 'Este código QR no tiene el formato esperado del ticket de cierre de NovaPOS.', 'err');
     return;
   }
   mostrarRevision(data);
@@ -398,6 +408,7 @@ function mostrarRevision(data) {
     ['Hora apertura', data.hora_apertura],
     ['Hora cierre', data.hora_cierre],
     ['Venta del turno', fmtMoney(data.venta_turno)],
+    ['Recargas telefónicas', fmtMoney(data.recargas_telefonicas)],
     ['Entregado a admin.', fmtMoney(data.monto_entregado_admin)],
     ['Inventario vendido', fmtMoney(data.inventario_vendido)],
     ['Faltante', fmtMoney(data.faltante)],
@@ -409,6 +420,8 @@ function mostrarRevision(data) {
 
   if (String(data.id_empleado).trim() !== SESSION.id) {
     showMsg('#review-msg', 'Este ticket pertenece a otro número de empleado. Verifica que sea tu turno.', 'warn');
+  } else if (data.v !== undefined && data.v !== QR_SCHEMA_VERSION) {
+    showMsg('#review-msg', 'Este ticket usa una versión de NovaPOS más reciente; revisa los datos con cuidado antes de enviar.', 'warn');
   }
 }
 
