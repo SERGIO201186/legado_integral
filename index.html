@@ -37,7 +37,7 @@
   .card{background:#fff;border:1px solid #E4DDD1;border-radius:14px;padding:18px;margin-bottom:14px;}
   .field{margin-bottom:14px;}
   .field label{display:block;font-size:12px;font-weight:600;color:#6b645a;margin-bottom:6px;letter-spacing:.02em;text-transform:uppercase;}
-  select,input[type=password],input[type=text]{width:100%;padding:12px 14px;border:1.5px solid #DCD3C4;border-radius:10px;font-size:16px;font-family:'Inter',sans-serif;background:#fff;color:var(--gris);}
+  select,input[type=password],input[type=text],input[type=date],input[type=time]{width:100%;padding:12px 14px;border:1.5px solid #DCD3C4;border-radius:10px;font-size:16px;font-family:'Inter',sans-serif;background:#fff;color:var(--gris);}
   select:focus,input:focus{outline:none;border-color:var(--teal);}
   button.primary{width:100%;padding:14px;border:none;border-radius:10px;background:var(--oro);color:#fff;font-size:15px;font-weight:600;font-family:'Inter',sans-serif;cursor:pointer;}
   button.primary:active{background:#725328;}
@@ -156,6 +156,53 @@
       <div id="scan-idle">
         <p class="hint">Apunta la cámara al código QR del ticket de cierre de caja.</p>
         <div id="reader"></div>
+        <button class="secondary" id="btn-manual" style="margin-top:14px;">¿No puedes escanear? Captura el ticket a mano</button>
+      </div>
+
+      <div id="scan-manual" class="card" hidden>
+        <h3 class="section">Captura los datos del ticket</h3>
+        <p style="font-size:12.5px;color:#8a8378;margin:-6px 0 16px;">Usa los datos del correo "Resumen de turno" que te llega al cerrar caja.</p>
+        <div class="field">
+          <label>Folio</label>
+          <input type="text" id="man-folio" placeholder="TCK-20260909-0027">
+        </div>
+        <div class="field">
+          <label>Fecha del turno</label>
+          <input type="date" id="man-fecha">
+        </div>
+        <div class="field">
+          <label>Hora apertura</label>
+          <input type="time" id="man-hora-apertura">
+        </div>
+        <div class="field">
+          <label>Hora cierre</label>
+          <input type="time" id="man-hora-cierre">
+        </div>
+        <div class="field">
+          <label>Venta del turno</label>
+          <input type="text" inputmode="decimal" id="man-venta" placeholder="0.00">
+        </div>
+        <div class="field">
+          <label>Recargas telefónicas</label>
+          <input type="text" inputmode="decimal" id="man-recargas" placeholder="0.00">
+        </div>
+        <div class="field">
+          <label>Inventario vendido</label>
+          <input type="text" inputmode="decimal" id="man-inventario" placeholder="0.00">
+        </div>
+        <div class="field">
+          <label>Faltante</label>
+          <input type="text" inputmode="decimal" id="man-faltante" placeholder="0.00">
+        </div>
+        <div class="field">
+          <label>Merma</label>
+          <input type="text" inputmode="decimal" id="man-merma" placeholder="0.00">
+        </div>
+        <div id="manual-msg"></div>
+        <div style="display:flex;gap:10px;margin-top:14px;">
+          <button class="secondary" id="btn-manual-cancelar">Cancelar</button>
+          <button class="primary" id="btn-manual-continuar">Continuar</button>
+        </div>
       </div>
 
       <div id="scan-review" class="card" hidden>
@@ -455,6 +502,54 @@ $('#btn-rescan').addEventListener('click', () => {
   ultimoQR = null;
   $('#scan-review').hidden = true;
   $('#scan-idle').hidden = false;
+});
+
+// -------------------- Captura manual del ticket --------------------
+// Respaldo para cuando la cámara no sirve: el mismo resumen de turno que
+// arma el QR le llega al dueño por correo (ver captura de pantalla del
+// email), así que el empleado puede tipear esos mismos datos a mano. Arma
+// el mismo objeto "data" que produciría un escaneo y reutiliza
+// mostrarRevision/btn-confirm tal cual — el backend no distingue si el
+// ticket vino de la cámara o de este formulario.
+function limpiarFormularioManual() {
+  ['#man-folio','#man-fecha','#man-hora-apertura','#man-hora-cierre','#man-venta','#man-recargas','#man-inventario','#man-faltante','#man-merma']
+    .forEach(sel => { $(sel).value = ''; });
+  showMsg('#manual-msg', '', '');
+}
+
+$('#btn-manual').addEventListener('click', () => {
+  limpiarFormularioManual();
+  $('#scan-idle').hidden = true;
+  $('#scan-manual').hidden = false;
+});
+
+$('#btn-manual-cancelar').addEventListener('click', () => {
+  $('#scan-manual').hidden = true;
+  $('#scan-idle').hidden = false;
+});
+
+$('#btn-manual-continuar').addEventListener('click', () => {
+  const folio = $('#man-folio').value.trim();
+  if (!folio) return showMsg('#manual-msg', 'Captura el folio del ticket (lo trae el correo "Resumen de turno").', 'err');
+
+  const num = (sel) => { const v = $(sel).value.trim(); return v === '' ? 0 : Number(v); };
+
+  const data = {
+    v: QR_SCHEMA_VERSION,
+    folio,
+    id_empleado: SESSION.id,
+    fecha: $('#man-fecha').value || '',
+    hora_apertura: $('#man-hora-apertura').value || '',
+    hora_cierre: $('#man-hora-cierre').value || '',
+    venta_turno: num('#man-venta'),
+    recargas_telefonicas: num('#man-recargas'),
+    inventario_vendido: num('#man-inventario'),
+    faltante: num('#man-faltante'),
+    merma: num('#man-merma'),
+  };
+
+  $('#scan-manual').hidden = true;
+  mostrarRevision(data);
 });
 
 $('#btn-confirm').addEventListener('click', async () => {
