@@ -1,4 +1,4 @@
-const CACHE_NAME = 'legado-integral-v1';
+const CACHE_NAME = 'legado-integral-v2';
 const PRECACHE_URLS = [
   './',
   './index.html',
@@ -24,22 +24,25 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Solo el shell de la app se sirve desde caché; las llamadas al backend
-// (Apps Script) siempre van a la red para no mostrar datos obsoletos.
+// Red primero, caché solo como respaldo sin conexión — antes era al revés
+// (caché primero) y como el nombre de la caché no cambiaba en cada
+// despliegue, el teléfono se quedaba sirviendo el index.html viejo para
+// siempre, sin importar cuántas actualizaciones se publicaran en el
+// repositorio: nunca volvía a consultar la red mientras existiera algo
+// guardado con esa misma URL. Con la app en línea (que además necesita
+// internet para hablar con el backend de Apps Script) siempre se busca la
+// versión más reciente primero.
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET' || !req.url.startsWith(self.location.origin)) return;
 
   event.respondWith(
-    caches.match(req).then((cached) => {
-      if (cached) return cached;
-      return fetch(req).then((res) => {
-        if (res.ok) {
-          const copy = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
-        }
-        return res;
-      }).catch(() => cached);
-    })
+    fetch(req).then((res) => {
+      if (res.ok) {
+        const copy = res.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+      }
+      return res;
+    }).catch(() => caches.match(req))
   );
 });
