@@ -269,6 +269,20 @@ async function apiPost(body) {
   return res.json();
 }
 
+// buscar_folio le reenvía la búsqueda al backend de NovaPOS del negocio
+// (otra cuenta de Google, otra implementación de Apps Script) — si esa
+// URL está mal configurada o el otro lado tarda en responder, el fetch
+// puede quedarse esperando indefinidamente sin tronar ni resolver nunca,
+// y el botón se queda trabado en "Buscando…" para siempre. Esto le pone
+// un límite: pasado el tiempo, se da por fallida aunque la petición real
+// siga en el aire.
+function conLimiteDeTiempo(promesa, ms) {
+  return Promise.race([
+    promesa,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('La búsqueda tardó demasiado')), ms)),
+  ]);
+}
+
 // -------------------- Teclado numérico de NIP --------------------
 function crearPinPad(prefix, maxLen) {
   const dotsEl = $('#' + prefix + '-dots');
@@ -556,27 +570,38 @@ $('#btn-buscar-folio').addEventListener('click', async () => {
   $('#btn-buscar-folio').textContent = 'Buscando…';
   showMsg('#buscar-folio-msg', '', '');
 
-  const r = await apiGet({ action: 'buscar_folio', folio });
+  // Si apiGet truena (sin conexión, CORS, el backend tarda más de lo que
+  // el navegador espera, etc.) antes tronaba sin capturarse, y el botón se
+  // quedaba trabado en "Buscando…" para siempre porque las líneas que lo
+  // reactivan nunca llegaban a correr. El try/finally garantiza que el
+  // botón siempre se reactive, haya salido bien la búsqueda o no.
+  try {
+    const r = await conLimiteDeTiempo(apiGet({ action: 'buscar_folio', folio }), 25000);
 
-  $('#btn-buscar-folio').disabled = false;
-  $('#btn-buscar-folio').textContent = '🔍 Buscar datos con ese folio';
+    if (!r.ok) {
+      showMsg('#buscar-folio-msg', (r.error || 'No se pudo buscar ese folio') + '. Captura los datos a mano abajo.', 'warn');
+      return;
+    }
 
-  if (!r.ok) {
-    return showMsg('#buscar-folio-msg', (r.error || 'No se pudo buscar ese folio') + '. Captura los datos a mano abajo.', 'warn');
+    const d = r.data;
+    $('#man-fecha').value = d.fecha || '';
+    $('#man-hora-apertura').value = d.hora_apertura || '';
+    $('#man-hora-cierre').value = d.hora_cierre || '';
+    $('#man-venta').value = d.venta_turno ?? '';
+    $('#man-recargas').value = d.recargas_telefonicas ?? '';
+    $('#man-comision-recargas').value = d.comision_recargas ?? '';
+    $('#man-copias').value = d.copias_impresiones_vendidas ?? '';
+    $('#man-inventario').value = d.inventario_vendido ?? '';
+    $('#man-faltante').value = d.faltante ?? '';
+    $('#man-merma').value = d.merma ?? '';
+    showMsg('#buscar-folio-msg', 'Datos encontrados y rellenados. Revísalos antes de continuar.', 'ok');
+  } catch (err) {
+    const detalle = err && err.message ? ` (${err.message})` : '';
+    showMsg('#buscar-folio-msg', 'No se pudo conectar para buscar el folio' + detalle + '. Captura los datos a mano abajo.', 'warn');
+  } finally {
+    $('#btn-buscar-folio').disabled = false;
+    $('#btn-buscar-folio').textContent = '🔍 Buscar datos con ese folio';
   }
-
-  const d = r.data;
-  $('#man-fecha').value = d.fecha || '';
-  $('#man-hora-apertura').value = d.hora_apertura || '';
-  $('#man-hora-cierre').value = d.hora_cierre || '';
-  $('#man-venta').value = d.venta_turno ?? '';
-  $('#man-recargas').value = d.recargas_telefonicas ?? '';
-  $('#man-comision-recargas').value = d.comision_recargas ?? '';
-  $('#man-copias').value = d.copias_impresiones_vendidas ?? '';
-  $('#man-inventario').value = d.inventario_vendido ?? '';
-  $('#man-faltante').value = d.faltante ?? '';
-  $('#man-merma').value = d.merma ?? '';
-  showMsg('#buscar-folio-msg', 'Datos encontrados y rellenados. Revísalos antes de continuar.', 'ok');
 });
 
 $('#btn-manual-continuar').addEventListener('click', () => {
