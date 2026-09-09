@@ -1,4 +1,4 @@
-const CACHE_NAME = 'legado-integral-v1';
+const CACHE_NAME = 'legado-integral-v2';
 const PRECACHE_URLS = [
   './',
   './index.html',
@@ -24,22 +24,24 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Solo el shell de la app se sirve desde caché; las llamadas al backend
-// (Apps Script) siempre van a la red para no mostrar datos obsoletos.
+// Red primero para el shell de la app (HTML/JS/CSS) — así una actualización
+// de código (como el envío de "secret" a apiGet/apiPost) llega en la
+// siguiente carga en vez de quedarse atascada en lo que se haya cacheado la
+// primera vez que alguien abrió la app. La copia en caché solo se usa como
+// respaldo si no hay conexión. Las llamadas al backend (Apps Script) nunca
+// pasan por aquí (no son same-origin), así que tampoco muestran datos
+// obsoletos.
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET' || !req.url.startsWith(self.location.origin)) return;
 
   event.respondWith(
-    caches.match(req).then((cached) => {
-      if (cached) return cached;
-      return fetch(req).then((res) => {
-        if (res.ok) {
-          const copy = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
-        }
-        return res;
-      }).catch(() => cached);
-    })
+    fetch(req).then((res) => {
+      if (res.ok) {
+        const copy = res.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+      }
+      return res;
+    }).catch(() => caches.match(req))
   );
 });
