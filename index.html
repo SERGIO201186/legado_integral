@@ -184,6 +184,11 @@
    ====================================================================== */
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby87CX5uj0RERANqddhOdbRwlWzYIQtWefTUKlyIwrGU9VEwWjNd-rY5lMMAHpGCCxY/exec";
 
+// Debe ser IDÉNTICA a la clave secreta configurada en el backend de Apps
+// Script (checkSecret()) — sin ella todas las peticiones responden
+// {ok:false, error:'unauthorized'} aunque la URL y los parámetros estén bien.
+const APP_SECRET = "NicolasBravo11centroVeracruzXalapa";
+
 let SESSION = JSON.parse(localStorage.getItem('legado_session') || 'null');
 let html5QrCode = null;
 let ultimoQR = null;
@@ -192,7 +197,7 @@ const $ = (sel) => document.querySelector(sel);
 
 // -------------------- Llamadas al backend --------------------
 async function apiGet(params) {
-  const url = APPS_SCRIPT_URL + '?' + new URLSearchParams(params).toString();
+  const url = APPS_SCRIPT_URL + '?' + new URLSearchParams(Object.assign({ secret: APP_SECRET }, params)).toString();
   const res = await fetch(url);
   return res.json();
 }
@@ -200,7 +205,7 @@ async function apiPost(body) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // evita preflight CORS
-    body: JSON.stringify(body),
+    body: JSON.stringify(Object.assign({ secret: APP_SECRET }, body)),
   });
   return res.json();
 }
