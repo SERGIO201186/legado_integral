@@ -24,8 +24,11 @@ function doGet(e) {
   if (action === 'get_pins') return json({ok:true, data: getPins_()});
 
   // Login de Legado Integral (empleados + validación de NIP) — ver
-  // getEmpleadosLogin_/handleResumenLogin_ más abajo.
-  if (action === 'empleados') return json({ok:true, empleados: getEmpleadosLogin_()});
+  // getEmpleadosLogin_/handleResumenLogin_ más abajo. El map() quita el NIP
+  // (_nip) antes de responder: getEmpleadosLogin_() lo trae para poder
+  // validarlo en el propio backend, pero nunca debe salir en la lista
+  // pública que arma el selector de "Empleado" en el login.
+  if (action === 'empleados') return json({ok:true, empleados: getEmpleadosLogin_().map(e => ({id: e.id, nombre: e.nombre}))});
   if (action === 'resumen') return handleResumenLogin_(e.parameter.id, e.parameter.nip);
 
   const sheet = getSheet(e.parameter.sheet || 'productos');
@@ -268,20 +271,21 @@ function handleRecharge_(body) {
 }
 
 // Guarda el acuse del empleado sobre un ticket de cierre en la hoja
-// "legado_turnos" (separada de "cortes", que NovaPOS ya llenó al cerrar
-// caja). Vuelve a validar el NIP contra VENDEDOR_PINS por su cuenta — el
-// backend nunca confía en la sesión guardada del navegador para una acción
-// que registra dinero entregado. Reenviar el mismo folio (p.ej. si el
-// empleado vuelve a escanear un ticket ya confirmado) actualiza esa misma
-// fila en vez de duplicarla.
+// "legado_turnos" de ESTA hoja de cálculo (la cuenta propia del operador de
+// Legado Integral — separada de "cortes" en NovaPOS, que vive en la cuenta
+// de cada negocio cliente y esta hoja nunca ve). Vuelve a validar el NIP
+// por su cuenta contra el directorio de empleados — el backend nunca
+// confía en la sesión guardada del navegador para una acción que registra
+// dinero entregado. Reenviar el mismo folio (p.ej. si el empleado vuelve a
+// escanear un ticket ya confirmado) actualiza esa misma fila en vez de
+// duplicarla.
 function handleConfirmarTurno_(body) {
   if (!body.folio) return json({ok:false, error:'Falta el folio del ticket'});
   if (!body.id_empleado) return json({ok:false, error:'Falta el empleado'});
 
   const empleado = getEmpleadosLogin_().find(e => String(e.id) === String(body.id_empleado));
   if (!empleado) return json({ok:false, error:'Empleado no encontrado'});
-  const pinGuardado = getPins_().vendedorPins[String(empleado._vendedorId)];
-  if (!pinGuardado || String(pinGuardado) !== String(body.nip)) {
+  if (String(empleado._nip) !== String(body.nip)) {
     return json({ok:false, error:'NIP incorrecto'});
   }
 
@@ -335,57 +339,67 @@ function indexOfHeader_(headers, nombre) {
   return headers.findIndex(h => String(h).trim().toLowerCase() === target);
 }
 
-// Lista de empleados para el login de Legado Integral. Usa la misma hoja
-// "vendedores" que administra NovaPOS — el "id" que se manda al cliente es
-// el codigoEmpleado (p.ej. "EMP-001"), no el id interno de la fila: es el
-// mismo valor que trae el campo "id_empleado" del QR de cierre de turno que
-// genera NovaPOS (ver generación del ticket en NovaPOS/index.html), así que
-// Legado Integral puede comparar sesión vs. ticket escaneado directamente.
-// Vendedores sin código de empleado capturado en NovaPOS quedan fuera: no
-// hay forma de identificarlos en un ticket.
+// Lista de empleados para el login de Legado Integral. Usa la hoja
+// "Directorio_Alta_Empleados" de ESTA hoja de cálculo — la cuenta propia
+// del operador de Legado Integral, no la de NovaPOS de cada negocio
+// cliente (son cuentas y hojas de cálculo distintas: NovaPOS nunca ve
+// estos datos, y este script nunca ve los de NovaPOS). Esa hoja trae 3
+// filas de título/instrucciones antes de los encabezados reales, así que
+// se busca la fila que contiene "ID Empleado" en vez de asumir que es la
+// primera. "id" es el valor de la columna "ID Empleado" (p.ej. "EMP-001")
+// — es el mismo valor que trae el campo "id_empleado" del QR de cierre de
+// turno que genera NovaPOS, así que Legado Integral puede comparar sesión
+// vs. ticket escaneado directamente. El NIP para entrar a Legado Integral
+// vive ahí mismo, columna "NIP de Acceso a Apps de la Empresa" — es
+// independiente del NIP de ventas que cada vendedor usa dentro de NovaPOS.
+// Empleados marcados "INACTIVO" quedan fuera del login.
 function getEmpleadosLogin_() {
-  const rows = getSheet('vendedores').getDataRange().getValues();
-  const headers = rows[0] || [];
-  const idCol = indexOfHeader_(headers, 'id');
-  const nombreCol = indexOfHeader_(headers, 'nombre');
-  const codigoCol = indexOfHeader_(headers, 'codigoEmpleado');
-  if (idCol < 0 || nombreCol < 0 || codigoCol < 0) return [];
-  return rows.slice(1)
-    .filter(r => String(r[codigoCol] || '').trim())
-    .map(r => ({ id: String(r[codigoCol]).trim(), nombre: r[nombreCol], _vendedorId: r[idCol] }));
+  const rows = getSheet('Directorio_Alta_Empleados').getDataRange().getValues();
+  const headerRowIdx = rows.findIndex(r => indexOfHeader_(r, 'ID Empleado') >= 0);
+  if (headerRowIdx < 0) return [];
+  const headers = rows[headerRowIdx];
+  const idCol = indexOfHeader_(headers, 'ID Empleado');
+  const nombreCol = indexOfHeader_(headers, 'Nombre Completo');
+  const estatusCol = indexOfHeader_(headers, 'Estatus');
+  const nipCol = indexOfHeader_(headers, 'NIP de Acceso a Apps de la Empresa');
+  if (idCol < 0 || nombreCol < 0 || nipCol < 0) return [];
+  return rows.slice(headerRowIdx + 1)
+    .filter(r => String(r[idCol] || '').trim() && String(r[nipCol] || '').trim())
+    .filter(r => estatusCol < 0 || String(r[estatusCol] || '').trim().toUpperCase() !== 'INACTIVO')
+    .map(r => ({ id: String(r[idCol]).trim(), nombre: r[nombreCol], _nip: String(r[nipCol]).trim() }));
 }
 
 // Diagnóstico manual: selecciona esta función en el desplegable del editor
 // de Apps Script y Ejecutar, luego revisa Ver → Registros de ejecución.
-// Muestra los encabezados detectados en "vendedores" y la lista final que
-// action=empleados le manda a Legado Integral — útil para confirmar si el
-// problema es un encabezado con nombre distinto, o simplemente que no hay
-// ningún vendedor con código de empleado capturado todavía.
+// Muestra los encabezados detectados en "Directorio_Alta_Empleados" y la
+// lista final que action=empleados le manda a Legado Integral — útil para
+// confirmar si el problema es un encabezado con nombre distinto, o
+// simplemente que no hay ningún empleado activo con NIP capturado todavía.
 // SIN guion bajo al final a propósito: Apps Script oculta del desplegable
 // "Ejecutar" cualquier función cuyo nombre termine en "_" (la convención
 // que usa este script para marcar funciones internas/privadas) — con guion
 // bajo, esta función nunca aparecería como opción para correr manualmente.
 function debugEmpleadosLogin() {
-  const rows = getSheet('vendedores').getDataRange().getValues();
-  Logger.log('Encabezados en "vendedores": ' + JSON.stringify(rows[0] || []));
-  Logger.log('Filas de datos: ' + (rows.length - 1));
+  const rows = getSheet('Directorio_Alta_Empleados').getDataRange().getValues();
+  const headerRowIdx = rows.findIndex(r => indexOfHeader_(r, 'ID Empleado') >= 0);
+  Logger.log('Fila de encabezados detectada: ' + (headerRowIdx < 0 ? 'NO ENCONTRADA' : (headerRowIdx + 1)));
+  Logger.log('Encabezados: ' + JSON.stringify(headerRowIdx < 0 ? [] : rows[headerRowIdx]));
+  Logger.log('Filas de datos: ' + Math.max(0, rows.length - 1 - headerRowIdx));
   Logger.log('Empleados que vería Legado Integral: ' + JSON.stringify(getEmpleadosLogin_()));
 }
 
-// Valida el NIP contra VENDEDOR_PINS (el mismo NIP con el que el vendedor ya
-// autoriza ventas en NovaPOS, ver getPins_/set_pin arriba) y regresa su
-// progreso. Los 4 bonos quedan en $0 por ahora: sus reglas (meta de venta,
-// tolerancia de retardo, montos) todavía no están definidas en ningún
-// lado — mostrar un número inventado aquí pagaría bonos con un criterio que
-// nadie acordó. Cuando se definan las reglas, calcularlas aquí dentro de
-// resumenMes_.
+// Valida el NIP contra el directorio de empleados propio de Legado Integral
+// (columna "NIP de Acceso a Apps de la Empresa" en Directorio_Alta_Empleados,
+// ver getEmpleadosLogin_ arriba) y regresa su progreso. Los 4 bonos quedan
+// en $0 por ahora: sus reglas (meta de venta, tolerancia de retardo,
+// montos) todavía no están definidas en ningún lado — mostrar un número
+// inventado aquí pagaría bonos con un criterio que nadie acordó. Cuando se
+// definan las reglas, calcularlas aquí dentro de resumenMes_.
 function handleResumenLogin_(codigoEmpleado, nip) {
   if (!codigoEmpleado || !nip) return json({ok:false, error:'Falta empleado o NIP'});
   const empleado = getEmpleadosLogin_().find(e => String(e.id) === String(codigoEmpleado));
   if (!empleado) return json({ok:false, error:'Empleado no encontrado'});
-
-  const pinGuardado = getPins_().vendedorPins[String(empleado._vendedorId)];
-  if (!pinGuardado || String(pinGuardado) !== String(nip)) {
+  if (String(empleado._nip) !== String(nip)) {
     return json({ok:false, error:'NIP incorrecto'});
   }
 
@@ -397,17 +411,21 @@ function handleResumenLogin_(codigoEmpleado, nip) {
   });
 }
 
-function cortesDelEmpleadoEntre_(codigoEmpleado, desde, hasta) {
-  const rows = getSheet('cortes').getDataRange().getValues();
+// Turnos que el propio empleado ya confirmó en Legado Integral (hoja
+// "legado_turnos", la que llena handleConfirmarTurno_ arriba) dentro de un
+// rango de fechas — NO la hoja "cortes" de NovaPOS, que vive en la cuenta
+// de cada negocio cliente y esta hoja de cálculo nunca llega a ver.
+function turnosDelEmpleadoEntre_(codigoEmpleado, desde, hasta) {
+  const rows = getSheet('legado_turnos').getDataRange().getValues();
   const headers = rows[0] || [];
   const codCol = indexOfHeader_(headers, 'codigoEmpleado');
-  const apCol = indexOfHeader_(headers, 'apertura');
+  const fechaCol = indexOfHeader_(headers, 'confirmado_en');
   const faltCol = indexOfHeader_(headers, 'faltante');
-  if (codCol < 0 || apCol < 0) return [];
+  if (codCol < 0 || fechaCol < 0) return [];
   return rows.slice(1)
-    .filter(r => String(r[codCol]) === String(codigoEmpleado) && r[apCol])
-    .map(r => ({ apertura: r[apCol], faltante: Number(r[faltCol]) || 0 }))
-    .filter(c => { const d = new Date(c.apertura); return d >= desde && d < hasta; });
+    .filter(r => String(r[codCol]) === String(codigoEmpleado) && r[fechaCol])
+    .map(r => ({ fecha: r[fechaCol], faltante: Number(r[faltCol]) || 0 }))
+    .filter(t => { const d = new Date(t.fecha); return d >= desde && d < hasta; });
 }
 
 function resumenSemana_(codigoEmpleado) {
@@ -416,15 +434,15 @@ function resumenSemana_(codigoEmpleado) {
   const inicio = new Date(hoy); inicio.setHours(0,0,0,0); inicio.setDate(hoy.getDate() - diaSemana);
   const fin = new Date(inicio); fin.setDate(inicio.getDate() + 7);
 
-  const turnos = cortesDelEmpleadoEntre_(codigoEmpleado, inicio, fin);
+  const turnos = turnosDelEmpleadoEntre_(codigoEmpleado, inicio, fin);
   const conFaltante = turnos.filter(t => t.faltante > 0);
 
   const puntos_favor = [];
   const areas_oportunidad = [];
-  if (turnos.length) puntos_favor.push(turnos.length + ' turno(s) registrado(s) esta semana.');
+  if (turnos.length) puntos_favor.push(turnos.length + ' turno(s) confirmado(s) esta semana.');
   if (turnos.length && !conFaltante.length) puntos_favor.push('Sin faltantes de caja esta semana.');
-  else conFaltante.forEach(t => areas_oportunidad.push('Faltante el ' + fmtDMY_(t.apertura) + ': $' + t.faltante.toFixed(2)));
-  if (!turnos.length) areas_oportunidad.push('Todavía no registras ningún turno esta semana.');
+  else conFaltante.forEach(t => areas_oportunidad.push('Faltante el ' + fmtDMY_(t.fecha) + ': $' + t.faltante.toFixed(2)));
+  if (!turnos.length) areas_oportunidad.push('Todavía no confirmas ningún turno esta semana.');
 
   return {
     rango: { inicio: fmtDMY_(inicio), fin: fmtDMY_(new Date(fin - 1)) },
