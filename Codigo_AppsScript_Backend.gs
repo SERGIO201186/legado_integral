@@ -326,6 +326,15 @@ function getPins_() {
   };
 }
 
+// Busca una columna por nombre tolerando mayúsculas/minúsculas y espacios
+// sobrantes — un encabezado escrito a mano en la hoja (en vez de generado
+// por el propio NovaPOS) fácilmente trae "CodigoEmpleado" o "codigoEmpleado "
+// en vez de "codigoEmpleado" exacto, y headers.indexOf() no perdona eso.
+function indexOfHeader_(headers, nombre) {
+  const target = String(nombre).trim().toLowerCase();
+  return headers.findIndex(h => String(h).trim().toLowerCase() === target);
+}
+
 // Lista de empleados para el login de Legado Integral. Usa la misma hoja
 // "vendedores" que administra NovaPOS — el "id" que se manda al cliente es
 // el codigoEmpleado (p.ej. "EMP-001"), no el id interno de la fila: es el
@@ -337,13 +346,26 @@ function getPins_() {
 function getEmpleadosLogin_() {
   const rows = getSheet('vendedores').getDataRange().getValues();
   const headers = rows[0] || [];
-  const idCol = headers.indexOf('id');
-  const nombreCol = headers.indexOf('nombre');
-  const codigoCol = headers.indexOf('codigoEmpleado');
+  const idCol = indexOfHeader_(headers, 'id');
+  const nombreCol = indexOfHeader_(headers, 'nombre');
+  const codigoCol = indexOfHeader_(headers, 'codigoEmpleado');
   if (idCol < 0 || nombreCol < 0 || codigoCol < 0) return [];
   return rows.slice(1)
-    .filter(r => r[codigoCol])
-    .map(r => ({ id: r[codigoCol], nombre: r[nombreCol], _vendedorId: r[idCol] }));
+    .filter(r => String(r[codigoCol] || '').trim())
+    .map(r => ({ id: String(r[codigoCol]).trim(), nombre: r[nombreCol], _vendedorId: r[idCol] }));
+}
+
+// Diagnóstico manual: selecciona esta función en el desplegable del editor
+// de Apps Script y Ejecutar, luego revisa Ver → Registros de ejecución.
+// Muestra los encabezados detectados en "vendedores" y la lista final que
+// action=empleados le manda a Legado Integral — útil para confirmar si el
+// problema es un encabezado con nombre distinto, o simplemente que no hay
+// ningún vendedor con código de empleado capturado todavía.
+function debugEmpleadosLogin_() {
+  const rows = getSheet('vendedores').getDataRange().getValues();
+  Logger.log('Encabezados en "vendedores": ' + JSON.stringify(rows[0] || []));
+  Logger.log('Filas de datos: ' + (rows.length - 1));
+  Logger.log('Empleados que vería Legado Integral: ' + JSON.stringify(getEmpleadosLogin_()));
 }
 
 // Valida el NIP contra VENDEDOR_PINS (el mismo NIP con el que el vendedor ya
@@ -374,9 +396,9 @@ function handleResumenLogin_(codigoEmpleado, nip) {
 function cortesDelEmpleadoEntre_(codigoEmpleado, desde, hasta) {
   const rows = getSheet('cortes').getDataRange().getValues();
   const headers = rows[0] || [];
-  const codCol = headers.indexOf('codigoEmpleado');
-  const apCol = headers.indexOf('apertura');
-  const faltCol = headers.indexOf('faltante');
+  const codCol = indexOfHeader_(headers, 'codigoEmpleado');
+  const apCol = indexOfHeader_(headers, 'apertura');
+  const faltCol = indexOfHeader_(headers, 'faltante');
   if (codCol < 0 || apCol < 0) return [];
   return rows.slice(1)
     .filter(r => String(r[codCol]) === String(codigoEmpleado) && r[apCol])
