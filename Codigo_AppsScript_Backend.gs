@@ -391,7 +391,7 @@ function handleBuscarFolio_(folio) {
 // FOLIO_DE_PRUEBA por un folio real antes de correrla: selecciónala en el
 // desplegable del editor → Ejecutar → Ver → Registros de ejecución.
 function debugBuscarFolio() {
-  const FOLIO_DE_PRUEBA = 'TCK-20260908-0025';
+  const FOLIO_DE_PRUEBA = 'TCK-20260908-0026'; // el que sí trae copias/impresiones en el correo
 
   const props = PropertiesService.getScriptProperties();
   const novaUrl = props.getProperty('NOVAPOS_URL');
@@ -417,6 +417,26 @@ function debugBuscarFolio() {
 
   Logger.log('--- Resultado de handleBuscarFolio_("' + FOLIO_DE_PRUEBA + '") ---');
   Logger.log(handleBuscarFolio_(FOLIO_DE_PRUEBA).getContent());
+
+  // Corte completo (todas sus columnas, tal cual las tiene NovaPOS) — cada
+  // negocio corre su propia copia de nova_codigo.gs, así que el nombre
+  // real de la columna de copias/impresiones puede no coincidir con
+  // "copiasImpresionesVendidasTotal" que usa handleBuscarFolio_ arriba.
+  // Esto ayuda a encontrar el nombre correcto sin adivinar.
+  try {
+    const body = JSON.parse(texto);
+    const corte = (body.data || []).find(c => String(c.folio) === String(FOLIO_DE_PRUEBA));
+    if (corte) {
+      Logger.log('--- Corte completo (todas las columnas que trae NovaPOS) ---');
+      Logger.log(JSON.stringify(corte, null, 2));
+      const clavesCopias = Object.keys(corte).filter(k => /copia|impres/i.test(k));
+      Logger.log('Columnas que mencionan "copia" o "impres": ' + JSON.stringify(clavesCopias));
+    } else {
+      Logger.log('No se encontró un corte con folio ' + FOLIO_DE_PRUEBA + ' en la respuesta.');
+    }
+  } catch (e) {
+    Logger.log('No se pudo volver a parsear la respuesta para inspeccionar el corte: ' + e);
+  }
 }
 
 function getPins_() {
