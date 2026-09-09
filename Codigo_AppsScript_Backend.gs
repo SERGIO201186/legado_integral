@@ -306,6 +306,8 @@ function handleConfirmarTurno_(body) {
     hora_cierre: body.hora_cierre || '',
     venta_turno: Number(body.venta_turno) || 0,
     recargas_telefonicas: Number(body.recargas_telefonicas) || 0,
+    comision_recargas: Number(body.comision_recargas) || 0,
+    copias_impresiones_vendidas: Number(body.copias_impresiones_vendidas) || 0,
     monto_entregado_admin: Number(body.monto_entregado_admin) || 0,
     inventario_vendido: Number(body.inventario_vendido) || 0,
     faltante: Number(body.faltante) || 0,
@@ -616,7 +618,7 @@ const SHEET_HEADERS = {
   // duplica los datos de "cortes", solo agrega lo que el empleado confirma
   // desde esta app — sobre todo monto_entregado_admin, que NovaPOS deja en
   // blanco a propósito porque ese paso es manual.
-  legado_turnos: ['id','folio','codigoEmpleado','nombreEmpleado','fecha','hora_apertura','hora_cierre','venta_turno','recargas_telefonicas','monto_entregado_admin','inventario_vendido','faltante','merma','confirmado_en'],
+  legado_turnos: ['id','folio','codigoEmpleado','nombreEmpleado','fecha','hora_apertura','hora_cierre','venta_turno','recargas_telefonicas','comision_recargas','copias_impresiones_vendidas','monto_entregado_admin','inventario_vendido','faltante','merma','confirmado_en'],
 };
 
 function getSheet(name) {
