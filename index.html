@@ -260,6 +260,15 @@ async function cargarEmpleados() {
   try {
     const r = await apiGet({ action: 'empleados' });
     if (!r.ok) throw new Error(r.error || 'Error al cargar empleados');
+    if (!r.empleados.length) {
+      // La lista sale vacía cuando en NovaPOS no hay ningún vendedor con
+      // "código de empleado" capturado (solo esos aparecen aquí, porque es
+      // el mismo valor que el QR de cierre de turno usa para identificar al
+      // empleado). No es un error de conexión: hay que ir a NovaPOS →
+      // Configuración → Vendedores y agregarle un código a cada uno.
+      sel.innerHTML = '<option value="">Sin empleados configurados</option>';
+      return showMsg('#login-msg', 'No hay vendedores con "código de empleado" capturado en NovaPOS. Ve a NovaPOS → Configuración → Vendedores y agrégale un código (ej. EMP-001) a cada uno para poder iniciar sesión aquí.', 'warn');
+    }
     sel.innerHTML = '<option value="">Selecciona tu nombre…</option>' +
       r.empleados.map(e => `<option value="${e.id}">${e.nombre}</option>`).join('');
   } catch (err) {
