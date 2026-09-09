@@ -23,6 +23,11 @@ function doGet(e) {
   // NIP, que solo son visibles desde el editor de Apps Script.
   if (action === 'get_pins') return json({ok:true, data: getPins_()});
 
+  // Login de Legado Integral (empleados + validación de NIP) — ver
+  // getEmpleadosLogin_/handleResumenLogin_ más abajo.
+  if (action === 'empleados') return json({ok:true, empleados: getEmpleadosLogin_()});
+  if (action === 'resumen') return handleResumenLogin_(e.parameter.id, e.parameter.nip);
+
   const sheet = getSheet(e.parameter.sheet || 'productos');
   if (action === 'get') {
     const rows = sheet.getDataRange().getValues();
@@ -52,6 +57,14 @@ function doPost(e) {
     // regresa el resultado. NovaPOS guarda el registro por separado con un
     // 'upsert' normal a la hoja "recargas", igual que hace con ventas/facturas.
     if (action === 'recharge') return handleRecharge_(body);
+
+    // Acuse del empleado sobre su ticket de cierre, escaneado y revisado en
+    // Legado Integral (ver buildCorteQrPayload en NovaPOS/index.html — la
+    // "especificación compartida" que arma ese QR). No reemplaza el corte
+    // que NovaPOS ya guardó en "cortes": es la confirmación del empleado,
+    // con el monto que entregó a administración (NovaPOS lo deja en blanco
+    // a propósito porque ese paso es manual y le toca completarlo aquí).
+    if (action === 'confirmar_turno') return handleConfirmarTurno_(body);
 
     // Guarda un NIP en Propiedades del script (nunca en una hoja). scope
     // 'owner'/'inventario' son un solo valor; 'vendedor' guarda un mapa
@@ -254,6 +267,54 @@ function handleRecharge_(body) {
     : json({ ok:false, error: resultado.mensaje||'Error del proveedor' });
 }
 
+// Guarda el acuse del empleado sobre un ticket de cierre en la hoja
+// "legado_turnos" (separada de "cortes", que NovaPOS ya llenó al cerrar
+// caja). Vuelve a validar el NIP contra VENDEDOR_PINS por su cuenta — el
+// backend nunca confía en la sesión guardada del navegador para una acción
+// que registra dinero entregado. Reenviar el mismo folio (p.ej. si el
+// empleado vuelve a escanear un ticket ya confirmado) actualiza esa misma
+// fila en vez de duplicarla.
+function handleConfirmarTurno_(body) {
+  if (!body.folio) return json({ok:false, error:'Falta el folio del ticket'});
+  if (!body.id_empleado) return json({ok:false, error:'Falta el empleado'});
+
+  const empleado = getEmpleadosLogin_().find(e => String(e.id) === String(body.id_empleado));
+  if (!empleado) return json({ok:false, error:'Empleado no encontrado'});
+  const pinGuardado = getPins_().vendedorPins[String(empleado._vendedorId)];
+  if (!pinGuardado || String(pinGuardado) !== String(body.nip)) {
+    return json({ok:false, error:'NIP incorrecto'});
+  }
+
+  const sheet = getSheet('legado_turnos');
+  const headers = ensureHeaders_(sheet, 'legado_turnos');
+  const rows = sheet.getDataRange().getValues();
+  const folioCol = headers.indexOf('folio');
+  const idCol = headers.indexOf('id');
+  const existing = rows.findIndex((r,i) => i>0 && r[folioCol] === body.folio);
+
+  const registro = {
+    id: existing > 0 ? rows[existing][idCol] : Utilities.getUuid(),
+    folio: body.folio,
+    codigoEmpleado: empleado.id,
+    nombreEmpleado: empleado.nombre,
+    fecha: body.fecha || '',
+    hora_apertura: body.hora_apertura || '',
+    hora_cierre: body.hora_cierre || '',
+    venta_turno: Number(body.venta_turno) || 0,
+    recargas_telefonicas: Number(body.recargas_telefonicas) || 0,
+    monto_entregado_admin: Number(body.monto_entregado_admin) || 0,
+    inventario_vendido: Number(body.inventario_vendido) || 0,
+    faltante: Number(body.faltante) || 0,
+    merma: Number(body.merma) || 0,
+    confirmado_en: new Date().toISOString(),
+  };
+  const row = headers.map(h => registro[h] ?? '');
+  if (existing > 0) sheet.getRange(existing+1,1,1,row.length).setValues([row]);
+  else sheet.appendRow(row);
+
+  return json({ok:true});
+}
+
 function getPins_() {
   const props = PropertiesService.getScriptProperties();
   let vendedorPins = {};
@@ -263,6 +324,108 @@ function getPins_() {
     invPin:   props.getProperty('INV_PIN') || '',
     vendedorPins,
   };
+}
+
+// Lista de empleados para el login de Legado Integral. Usa la misma hoja
+// "vendedores" que administra NovaPOS — el "id" que se manda al cliente es
+// el codigoEmpleado (p.ej. "EMP-001"), no el id interno de la fila: es el
+// mismo valor que trae el campo "id_empleado" del QR de cierre de turno que
+// genera NovaPOS (ver generación del ticket en NovaPOS/index.html), así que
+// Legado Integral puede comparar sesión vs. ticket escaneado directamente.
+// Vendedores sin código de empleado capturado en NovaPOS quedan fuera: no
+// hay forma de identificarlos en un ticket.
+function getEmpleadosLogin_() {
+  const rows = getSheet('vendedores').getDataRange().getValues();
+  const headers = rows[0] || [];
+  const idCol = headers.indexOf('id');
+  const nombreCol = headers.indexOf('nombre');
+  const codigoCol = headers.indexOf('codigoEmpleado');
+  if (idCol < 0 || nombreCol < 0 || codigoCol < 0) return [];
+  return rows.slice(1)
+    .filter(r => r[codigoCol])
+    .map(r => ({ id: r[codigoCol], nombre: r[nombreCol], _vendedorId: r[idCol] }));
+}
+
+// Valida el NIP contra VENDEDOR_PINS (el mismo NIP con el que el vendedor ya
+// autoriza ventas en NovaPOS, ver getPins_/set_pin arriba) y regresa su
+// progreso. Los 4 bonos quedan en $0 por ahora: sus reglas (meta de venta,
+// tolerancia de retardo, montos) todavía no están definidas en ningún
+// lado — mostrar un número inventado aquí pagaría bonos con un criterio que
+// nadie acordó. Cuando se definan las reglas, calcularlas aquí dentro de
+// resumenMes_.
+function handleResumenLogin_(codigoEmpleado, nip) {
+  if (!codigoEmpleado || !nip) return json({ok:false, error:'Falta empleado o NIP'});
+  const empleado = getEmpleadosLogin_().find(e => String(e.id) === String(codigoEmpleado));
+  if (!empleado) return json({ok:false, error:'Empleado no encontrado'});
+
+  const pinGuardado = getPins_().vendedorPins[String(empleado._vendedorId)];
+  if (!pinGuardado || String(pinGuardado) !== String(nip)) {
+    return json({ok:false, error:'NIP incorrecto'});
+  }
+
+  return json({
+    ok: true,
+    empleado: { id: empleado.id, nombre: empleado.nombre },
+    semana: resumenSemana_(codigoEmpleado),
+    mes: resumenMes_(),
+  });
+}
+
+function cortesDelEmpleadoEntre_(codigoEmpleado, desde, hasta) {
+  const rows = getSheet('cortes').getDataRange().getValues();
+  const headers = rows[0] || [];
+  const codCol = headers.indexOf('codigoEmpleado');
+  const apCol = headers.indexOf('apertura');
+  const faltCol = headers.indexOf('faltante');
+  if (codCol < 0 || apCol < 0) return [];
+  return rows.slice(1)
+    .filter(r => String(r[codCol]) === String(codigoEmpleado) && r[apCol])
+    .map(r => ({ apertura: r[apCol], faltante: Number(r[faltCol]) || 0 }))
+    .filter(c => { const d = new Date(c.apertura); return d >= desde && d < hasta; });
+}
+
+function resumenSemana_(codigoEmpleado) {
+  const hoy = new Date();
+  const diaSemana = (hoy.getDay() + 6) % 7; // lunes=0 ... domingo=6
+  const inicio = new Date(hoy); inicio.setHours(0,0,0,0); inicio.setDate(hoy.getDate() - diaSemana);
+  const fin = new Date(inicio); fin.setDate(inicio.getDate() + 7);
+
+  const turnos = cortesDelEmpleadoEntre_(codigoEmpleado, inicio, fin);
+  const conFaltante = turnos.filter(t => t.faltante > 0);
+
+  const puntos_favor = [];
+  const areas_oportunidad = [];
+  if (turnos.length) puntos_favor.push(turnos.length + ' turno(s) registrado(s) esta semana.');
+  if (turnos.length && !conFaltante.length) puntos_favor.push('Sin faltantes de caja esta semana.');
+  else conFaltante.forEach(t => areas_oportunidad.push('Faltante el ' + fmtDMY_(t.apertura) + ': $' + t.faltante.toFixed(2)));
+  if (!turnos.length) areas_oportunidad.push('Todavía no registras ningún turno esta semana.');
+
+  return {
+    rango: { inicio: fmtDMY_(inicio), fin: fmtDMY_(new Date(fin - 1)) },
+    puntos_favor,
+    areas_oportunidad,
+  };
+}
+
+// Placeholder mientras se definen las reglas de los 4 bonos — ver el
+// comentario en handleResumenLogin_.
+function resumenMes_() {
+  const hoy = new Date();
+  return {
+    mes: hoy.toLocaleDateString('es-MX', { month: 'long' }),
+    elegible_premio_maximo: false,
+    mensaje: 'El cálculo de bonos del mes está pendiente de configurar — próximamente verás aquí tu progreso real.',
+    bono_ventas: 0,
+    bono_puntualidad: 0,
+    bono_caja: 0,
+    bono_inventario: 0,
+    total_bonos: 0,
+  };
+}
+
+function fmtDMY_(fecha) {
+  const d = new Date(fecha);
+  return ('0'+d.getDate()).slice(-2) + '/' + ('0'+(d.getMonth()+1)).slice(-2);
 }
 
 function getConfigMap_() {
@@ -397,6 +560,13 @@ const SHEET_HEADERS = {
   // Catálogo de turnos de personal (Mañana/Noche, etc.) — informativo, no
   // tiene que ver con la apertura/cierre real de cada caja.
   turnos: ['id','nombre','horaInicio','horaFin','vendedorIds'],
+  // Acuse del empleado sobre su ticket de cierre, capturado en Legado
+  // Integral al escanear el QR que genera NovaPOS (buildCorteQrPayload).
+  // "folio" identifica el ticket (mismo folio que en "cortes"); no
+  // duplica los datos de "cortes", solo agrega lo que el empleado confirma
+  // desde esta app — sobre todo monto_entregado_admin, que NovaPOS deja en
+  // blanco a propósito porque ese paso es manual.
+  legado_turnos: ['id','folio','codigoEmpleado','nombreEmpleado','fecha','hora_apertura','hora_cierre','venta_turno','recargas_telefonicas','monto_entregado_admin','inventario_vendido','faltante','merma','confirmado_en'],
 };
 
 function getSheet(name) {

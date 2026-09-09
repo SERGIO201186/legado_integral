@@ -161,6 +161,10 @@
       <div id="scan-review" class="card" hidden>
         <h3 class="section">Verifica los datos antes de enviar</h3>
         <div id="review-body"></div>
+        <div class="field" style="margin-top:10px;">
+          <label>Entregado a administración</label>
+          <input type="text" inputmode="decimal" id="input-entregado-admin" placeholder="0.00">
+        </div>
         <div id="review-msg" style="margin-top:10px;"></div>
         <div style="display:flex;gap:10px;margin-top:14px;">
           <button class="secondary" id="btn-rescan">Volver a escanear</button>
@@ -183,6 +187,9 @@
    (termina en /exec). Ver instrucciones en Codigo_AppsScript_Backend.gs
    ====================================================================== */
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycby87CX5uj0RERANqddhOdbRwlWzYIQtWefTUKlyIwrGU9VEwWjNd-rY5lMMAHpGCCxY/exec";
+// Debe ser IDÉNTICA a SYNC_SECRET en Codigo_AppsScript_Backend.gs — sin ella
+// el backend responde "unauthorized" a cualquier llamada (incluido el login).
+const SYNC_SECRET = "NicolasBravo11centroVeracruzXalapa";
 
 let SESSION = JSON.parse(localStorage.getItem('legado_session') || 'null');
 let html5QrCode = null;
@@ -192,7 +199,7 @@ const $ = (sel) => document.querySelector(sel);
 
 // -------------------- Llamadas al backend --------------------
 async function apiGet(params) {
-  const url = APPS_SCRIPT_URL + '?' + new URLSearchParams(params).toString();
+  const url = APPS_SCRIPT_URL + '?' + new URLSearchParams(Object.assign({ secret: SYNC_SECRET }, params)).toString();
   const res = await fetch(url);
   return res.json();
 }
@@ -200,7 +207,7 @@ async function apiPost(body) {
   const res = await fetch(APPS_SCRIPT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // evita preflight CORS
-    body: JSON.stringify(body),
+    body: JSON.stringify(Object.assign({ secret: SYNC_SECRET }, body)),
   });
   return res.json();
 }
@@ -410,7 +417,6 @@ function mostrarRevision(data) {
     ['Hora cierre', data.hora_cierre],
     ['Venta del turno', fmtMoney(data.venta_turno)],
     ['Recargas telefónicas', fmtMoney(data.recargas_telefonicas)],
-    ['Entregado a admin.', fmtMoney(data.monto_entregado_admin)],
     ['Inventario vendido', fmtMoney(data.inventario_vendido)],
     ['Faltante', fmtMoney(data.faltante)],
     ['Merma', fmtMoney(data.merma)],
@@ -418,6 +424,11 @@ function mostrarRevision(data) {
   $('#review-body').innerHTML = filas.map(([k, v]) =>
     `<div class="review-row"><span class="k">${k}</span><span class="v">${v ?? '—'}</span></div>`
   ).join('');
+  // NovaPOS deja "monto_entregado_admin" en blanco a propósito: ese paso es
+  // manual y le toca completarlo al empleado aquí (ver buildCorteQrPayload en
+  // NovaPOS/index.html). Si el ticket ya trae un valor (p.ej. se vuelve a
+  // escanear un ticket ya confirmado antes), se precarga para no perderlo.
+  $('#input-entregado-admin').value = data.monto_entregado_admin || '';
 
   if (String(data.id_empleado).trim() !== SESSION.id) {
     showMsg('#review-msg', 'Este ticket pertenece a otro número de empleado. Verifica que sea tu turno.', 'warn');
@@ -440,10 +451,21 @@ $('#btn-rescan').addEventListener('click', () => {
 $('#btn-confirm').addEventListener('click', async () => {
   const data = window.__pendingScan;
   if (!data) return;
+
+  const entregadoAdmin = $('#input-entregado-admin').value.trim();
+  if (entregadoAdmin === '' || isNaN(Number(entregadoAdmin))) {
+    return showMsg('#review-msg', 'Captura cuánto entregaste a administración.', 'err');
+  }
+
   $('#btn-confirm').disabled = true;
   $('#btn-confirm').textContent = 'Enviando…';
 
-  const payload = Object.assign({}, data, { id_empleado: SESSION.id, nip: SESSION.nip });
+  const payload = Object.assign({}, data, {
+    action: 'confirmar_turno',
+    id_empleado: SESSION.id,
+    nip: SESSION.nip,
+    monto_entregado_admin: Number(entregadoAdmin),
+  });
   const r = await apiPost(payload);
 
   $('#btn-confirm').disabled = false;
