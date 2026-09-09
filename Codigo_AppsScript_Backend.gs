@@ -376,6 +376,45 @@ function handleBuscarFolio_(folio) {
   });
 }
 
+// Diagnóstico manual para buscar_folio — mismo patrón que
+// debugEmpleadosLogin más abajo. El navegador solo reporta "Failed to
+// fetch" cuando la conexión se cae, sin decir por qué; esto corre del
+// lado del servidor y muestra el detalle real: si las Propiedades están
+// configuradas, cuánto tardó la llamada a NovaPOS, qué código HTTP
+// respondió y el arranque de su contenido (para distinguir un JSON válido
+// de, por ejemplo, una página de acceso de Google si el Apps Script de
+// NovaPOS no está publicado como "Cualquier usuario"). Cambia
+// FOLIO_DE_PRUEBA por un folio real antes de correrla: selecciónala en el
+// desplegable del editor → Ejecutar → Ver → Registros de ejecución.
+function debugBuscarFolio() {
+  const FOLIO_DE_PRUEBA = 'TCK-20260908-0025';
+
+  const props = PropertiesService.getScriptProperties();
+  const novaUrl = props.getProperty('NOVAPOS_URL');
+  const novaSecret = props.getProperty('NOVAPOS_SECRET');
+  Logger.log('NOVAPOS_URL configurada: ' + (novaUrl ? 'sí (' + novaUrl + ')' : 'NO'));
+  Logger.log('NOVAPOS_SECRET configurada: ' + (novaSecret ? 'sí' : 'NO'));
+  if (!novaUrl || !novaSecret) { Logger.log('Faltan Propiedades del script — configúralas antes de seguir.'); return; }
+
+  const url = novaUrl + '?action=get&sheet=cortes&secret=' + encodeURIComponent(novaSecret);
+  const inicio = Date.now();
+  let resp;
+  try {
+    resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  } catch (e) {
+    Logger.log('UrlFetchApp.fetch lanzó una excepción: ' + e);
+    return;
+  }
+  Logger.log('Tardó ' + (Date.now() - inicio) + ' ms en responder');
+  Logger.log('Código HTTP: ' + resp.getResponseCode());
+  const texto = resp.getContentText();
+  Logger.log('Longitud de la respuesta: ' + texto.length + ' caracteres');
+  Logger.log('Primeros 300 caracteres: ' + texto.slice(0, 300));
+
+  Logger.log('--- Resultado de handleBuscarFolio_("' + FOLIO_DE_PRUEBA + '") ---');
+  Logger.log(handleBuscarFolio_(FOLIO_DE_PRUEBA).getContent());
+}
+
 function getPins_() {
   const props = PropertiesService.getScriptProperties();
   let vendedorPins = {};
