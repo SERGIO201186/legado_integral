@@ -187,6 +187,14 @@
           <input type="text" inputmode="decimal" id="man-recargas" placeholder="0.00">
         </div>
         <div class="field">
+          <label>Comisión de recargas</label>
+          <input type="text" inputmode="decimal" id="man-comision-recargas" placeholder="0.00">
+        </div>
+        <div class="field">
+          <label>Copias e impresiones vendidas</label>
+          <input type="text" inputmode="decimal" id="man-copias" placeholder="0.00">
+        </div>
+        <div class="field">
           <label>Inventario vendido</label>
           <input type="text" inputmode="decimal" id="man-inventario" placeholder="0.00">
         </div>
@@ -473,6 +481,8 @@ function mostrarRevision(data) {
     ['Hora cierre', data.hora_cierre],
     ['Venta del turno', fmtMoney(data.venta_turno)],
     ['Recargas telefónicas', fmtMoney(data.recargas_telefonicas)],
+    ['Comisión de recargas', fmtMoney(data.comision_recargas)],
+    ['Copias e impresiones vendidas', fmtMoney(data.copias_impresiones_vendidas)],
     ['Inventario vendido', fmtMoney(data.inventario_vendido)],
     ['Faltante', fmtMoney(data.faltante)],
     ['Merma', fmtMoney(data.merma)],
@@ -512,7 +522,7 @@ $('#btn-rescan').addEventListener('click', () => {
 // mostrarRevision/btn-confirm tal cual — el backend no distingue si el
 // ticket vino de la cámara o de este formulario.
 function limpiarFormularioManual() {
-  ['#man-folio','#man-fecha','#man-hora-apertura','#man-hora-cierre','#man-venta','#man-recargas','#man-inventario','#man-faltante','#man-merma']
+  ['#man-folio','#man-fecha','#man-hora-apertura','#man-hora-cierre','#man-venta','#man-recargas','#man-comision-recargas','#man-copias','#man-inventario','#man-faltante','#man-merma']
     .forEach(sel => { $(sel).value = ''; });
   showMsg('#manual-msg', '', '');
 }
@@ -543,6 +553,8 @@ $('#btn-manual-continuar').addEventListener('click', () => {
     hora_cierre: $('#man-hora-cierre').value || '',
     venta_turno: num('#man-venta'),
     recargas_telefonicas: num('#man-recargas'),
+    comision_recargas: num('#man-comision-recargas'),
+    copias_impresiones_vendidas: num('#man-copias'),
     inventario_vendido: num('#man-inventario'),
     faltante: num('#man-faltante'),
     merma: num('#man-merma'),
