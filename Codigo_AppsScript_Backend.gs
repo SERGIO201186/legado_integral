@@ -335,8 +335,14 @@ function getPins_() {
 // por el propio NovaPOS) fácilmente trae "CodigoEmpleado" o "codigoEmpleado "
 // en vez de "codigoEmpleado" exacto, y headers.indexOf() no perdona eso.
 function indexOfHeader_(headers, nombre) {
-  const target = String(nombre).trim().toLowerCase();
-  return headers.findIndex(h => String(h).trim().toLowerCase() === target);
+  // \s+ también agarra saltos de línea DENTRO de la celda (Alt+Enter al
+  // capturar el encabezado, p.ej. "NIP de Acceso\na Apps de la Empresa" en
+  // Directorio_Alta_Empleados) — sin esto, un encabezado envuelto a mano en
+  // dos líneas nunca calzaba con el nombre de columna que este script busca,
+  // aunque la columna sí existiera, y la función regresaba lista vacía.
+  const norm = s => String(s).replace(/\s+/g, ' ').trim().toLowerCase();
+  const target = norm(nombre);
+  return headers.findIndex(h => norm(h) === target);
 }
 
 // Lista de empleados para el login de Legado Integral. Usa la hoja
