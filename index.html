@@ -166,6 +166,8 @@
           <label>Folio</label>
           <input type="text" id="man-folio" placeholder="TCK-20260909-0027">
         </div>
+        <button type="button" class="secondary" id="btn-buscar-folio" style="margin-bottom:16px;">🔍 Buscar datos con ese folio</button>
+        <div id="buscar-folio-msg"></div>
         <div class="field">
           <label>Fecha del turno</label>
           <input type="date" id="man-fecha">
@@ -525,6 +527,7 @@ function limpiarFormularioManual() {
   ['#man-folio','#man-fecha','#man-hora-apertura','#man-hora-cierre','#man-venta','#man-recargas','#man-comision-recargas','#man-copias','#man-inventario','#man-faltante','#man-merma']
     .forEach(sel => { $(sel).value = ''; });
   showMsg('#manual-msg', '', '');
+  showMsg('#buscar-folio-msg', '', '');
 }
 
 $('#btn-manual').addEventListener('click', () => {
@@ -536,6 +539,44 @@ $('#btn-manual').addEventListener('click', () => {
 $('#btn-manual-cancelar').addEventListener('click', () => {
   $('#scan-manual').hidden = true;
   $('#scan-idle').hidden = false;
+});
+
+// El folio solo no trae los montos del ticket — pero el backend de Legado
+// Integral sí puede pedirle el corte completo al backend de NovaPOS de
+// este negocio (ver action=buscar_folio en Codigo_AppsScript_Backend.gs) y
+// rellenar el resto del formulario solo, en vez de que el empleado tenga
+// que volver a teclear cada monto a mano (con el riesgo de un error de
+// captura). Si la búsqueda falla (folio no encontrado, sin conexión con
+// NovaPOS, etc.) los campos se quedan como estén para llenarlos a mano.
+$('#btn-buscar-folio').addEventListener('click', async () => {
+  const folio = $('#man-folio').value.trim();
+  if (!folio) return showMsg('#buscar-folio-msg', 'Captura el folio primero.', 'err');
+
+  $('#btn-buscar-folio').disabled = true;
+  $('#btn-buscar-folio').textContent = 'Buscando…';
+  showMsg('#buscar-folio-msg', '', '');
+
+  const r = await apiGet({ action: 'buscar_folio', folio });
+
+  $('#btn-buscar-folio').disabled = false;
+  $('#btn-buscar-folio').textContent = '🔍 Buscar datos con ese folio';
+
+  if (!r.ok) {
+    return showMsg('#buscar-folio-msg', (r.error || 'No se pudo buscar ese folio') + '. Captura los datos a mano abajo.', 'warn');
+  }
+
+  const d = r.data;
+  $('#man-fecha').value = d.fecha || '';
+  $('#man-hora-apertura').value = d.hora_apertura || '';
+  $('#man-hora-cierre').value = d.hora_cierre || '';
+  $('#man-venta').value = d.venta_turno ?? '';
+  $('#man-recargas').value = d.recargas_telefonicas ?? '';
+  $('#man-comision-recargas').value = d.comision_recargas ?? '';
+  $('#man-copias').value = d.copias_impresiones_vendidas ?? '';
+  $('#man-inventario').value = d.inventario_vendido ?? '';
+  $('#man-faltante').value = d.faltante ?? '';
+  $('#man-merma').value = d.merma ?? '';
+  showMsg('#buscar-folio-msg', 'Datos encontrados y rellenados. Revísalos antes de continuar.', 'ok');
 });
 
 $('#btn-manual-continuar').addEventListener('click', () => {

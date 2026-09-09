@@ -31,6 +31,12 @@ function doGet(e) {
   if (action === 'empleados') return json({ok:true, empleados: getEmpleadosLogin_().map(e => ({id: e.id, nombre: e.nombre}))});
   if (action === 'resumen') return handleResumenLogin_(e.parameter.id, e.parameter.nip);
 
+  // Respaldo de la captura manual del ticket cuando la cámara no sirve:
+  // en vez de que el empleado teclee los montos a mano (con riesgo de
+  // error de captura), trae el corte real consultando directo al backend
+  // de NovaPOS de este negocio. Ver handleBuscarFolio_ más abajo.
+  if (action === 'buscar_folio') return handleBuscarFolio_(e.parameter.folio);
+
   const sheet = getSheet(e.parameter.sheet || 'productos');
   if (action === 'get') {
     const rows = sheet.getDataRange().getValues();
@@ -319,6 +325,55 @@ function handleConfirmarTurno_(body) {
   else sheet.appendRow(row);
 
   return json({ok:true});
+}
+
+// Trae el corte real por folio consultando directo al backend de NovaPOS
+// de este negocio (su propia URL /exec y su propia SYNC_SECRET — NUNCA en
+// este código fuente, igual que MP_ACCESS_TOKEN: se configuran una sola
+// vez desde Propiedades del proyecto en el editor de Apps Script). Esto
+// evita que el empleado tenga que volver a teclear a mano los montos del
+// ticket cuando ya sabe el folio, con el riesgo de un error de captura.
+// NovaPOS no ofrece una acción para buscar un solo folio, así que se baja
+// toda la hoja "cortes" (action=get, igual que hace el propio NovaPOS al
+// sincronizar) y se filtra aquí.
+function handleBuscarFolio_(folio) {
+  if (!folio) return json({ok:false, error:'Falta el folio'});
+  const props = PropertiesService.getScriptProperties();
+  const novaUrl = props.getProperty('NOVAPOS_URL');
+  const novaSecret = props.getProperty('NOVAPOS_SECRET');
+  if (!novaUrl || !novaSecret) {
+    return json({ok:false, error:'Falta configurar NOVAPOS_URL/NOVAPOS_SECRET en Propiedades del script'});
+  }
+
+  const url = novaUrl + '?action=get&sheet=cortes&secret=' + encodeURIComponent(novaSecret);
+  const resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  let body;
+  try { body = JSON.parse(resp.getContentText() || '{}'); } catch(e) { return json({ok:false, error:'Respuesta inválida de NovaPOS'}); }
+  if (!body.ok) return json({ok:false, error:'NovaPOS: ' + (body.error || 'error desconocido')});
+
+  const corte = (body.data || []).find(c => String(c.folio) === String(folio));
+  if (!corte) return json({ok:false, error:'No se encontró ese folio en NovaPOS'});
+
+  const hhmm = iso => { const d = new Date(iso); return ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2); };
+  return json({
+    ok: true,
+    data: {
+      v: 1,
+      folio: corte.folio,
+      id_empleado: corte.codigoEmpleado || '',
+      fecha: String(corte.apertura || '').slice(0,10),
+      hora_apertura: corte.apertura ? hhmm(corte.apertura) : '',
+      hora_cierre: corte.cierre ? hhmm(corte.cierre) : '',
+      venta_turno: Math.round((Number(corte.ventasTotal) || 0) * 100) / 100,
+      recargas_telefonicas: Math.round((Number(corte.recargasTotal) || 0) * 100) / 100,
+      comision_recargas: Math.round((Number(corte.recargasComisionTotal) || 0) * 100) / 100,
+      copias_impresiones_vendidas: Math.round((Number(corte.copiasImpresionesVendidasTotal) || 0) * 100) / 100,
+      monto_entregado_admin: '',
+      inventario_vendido: Math.round((Number(corte.ventasTotal) || 0) * 100) / 100,
+      faltante: Math.round((Number(corte.faltante) || 0) * 100) / 100,
+      merma: 0,
+    },
+  });
 }
 
 function getPins_() {
