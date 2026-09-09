@@ -361,7 +361,11 @@ function getEmpleadosLogin_() {
 // action=empleados le manda a Legado Integral — útil para confirmar si el
 // problema es un encabezado con nombre distinto, o simplemente que no hay
 // ningún vendedor con código de empleado capturado todavía.
-function debugEmpleadosLogin_() {
+// SIN guion bajo al final a propósito: Apps Script oculta del desplegable
+// "Ejecutar" cualquier función cuyo nombre termine en "_" (la convención
+// que usa este script para marcar funciones internas/privadas) — con guion
+// bajo, esta función nunca aparecería como opción para correr manualmente.
+function debugEmpleadosLogin() {
   const rows = getSheet('vendedores').getDataRange().getValues();
   Logger.log('Encabezados en "vendedores": ' + JSON.stringify(rows[0] || []));
   Logger.log('Filas de datos: ' + (rows.length - 1));
