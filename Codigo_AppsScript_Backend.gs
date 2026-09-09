@@ -58,6 +58,14 @@ function doPost(e) {
     // 'upsert' normal a la hoja "recargas", igual que hace con ventas/facturas.
     if (action === 'recharge') return handleRecharge_(body);
 
+    // Acuse del empleado sobre su ticket de cierre, escaneado y revisado en
+    // Legado Integral (ver buildCorteQrPayload en NovaPOS/index.html — la
+    // "especificación compartida" que arma ese QR). No reemplaza el corte
+    // que NovaPOS ya guardó en "cortes": es la confirmación del empleado,
+    // con el monto que entregó a administración (NovaPOS lo deja en blanco
+    // a propósito porque ese paso es manual y le toca completarlo aquí).
+    if (action === 'confirmar_turno') return handleConfirmarTurno_(body);
+
     // Guarda un NIP en Propiedades del script (nunca en una hoja). scope
     // 'owner'/'inventario' son un solo valor; 'vendedor' guarda un mapa
     // {vendedorId: pin} porque puede haber varios. pin vacío = quitar/borrar.
@@ -257,6 +265,54 @@ function handleRecharge_(body) {
   return resultado.ok
     ? json({ ok:true, folioProveedor: resultado.folioProveedor||'', mensaje: resultado.mensaje||'' })
     : json({ ok:false, error: resultado.mensaje||'Error del proveedor' });
+}
+
+// Guarda el acuse del empleado sobre un ticket de cierre en la hoja
+// "legado_turnos" (separada de "cortes", que NovaPOS ya llenó al cerrar
+// caja). Vuelve a validar el NIP contra VENDEDOR_PINS por su cuenta — el
+// backend nunca confía en la sesión guardada del navegador para una acción
+// que registra dinero entregado. Reenviar el mismo folio (p.ej. si el
+// empleado vuelve a escanear un ticket ya confirmado) actualiza esa misma
+// fila en vez de duplicarla.
+function handleConfirmarTurno_(body) {
+  if (!body.folio) return json({ok:false, error:'Falta el folio del ticket'});
+  if (!body.id_empleado) return json({ok:false, error:'Falta el empleado'});
+
+  const empleado = getEmpleadosLogin_().find(e => String(e.id) === String(body.id_empleado));
+  if (!empleado) return json({ok:false, error:'Empleado no encontrado'});
+  const pinGuardado = getPins_().vendedorPins[String(empleado._vendedorId)];
+  if (!pinGuardado || String(pinGuardado) !== String(body.nip)) {
+    return json({ok:false, error:'NIP incorrecto'});
+  }
+
+  const sheet = getSheet('legado_turnos');
+  const headers = ensureHeaders_(sheet, 'legado_turnos');
+  const rows = sheet.getDataRange().getValues();
+  const folioCol = headers.indexOf('folio');
+  const idCol = headers.indexOf('id');
+  const existing = rows.findIndex((r,i) => i>0 && r[folioCol] === body.folio);
+
+  const registro = {
+    id: existing > 0 ? rows[existing][idCol] : Utilities.getUuid(),
+    folio: body.folio,
+    codigoEmpleado: empleado.id,
+    nombreEmpleado: empleado.nombre,
+    fecha: body.fecha || '',
+    hora_apertura: body.hora_apertura || '',
+    hora_cierre: body.hora_cierre || '',
+    venta_turno: Number(body.venta_turno) || 0,
+    recargas_telefonicas: Number(body.recargas_telefonicas) || 0,
+    monto_entregado_admin: Number(body.monto_entregado_admin) || 0,
+    inventario_vendido: Number(body.inventario_vendido) || 0,
+    faltante: Number(body.faltante) || 0,
+    merma: Number(body.merma) || 0,
+    confirmado_en: new Date().toISOString(),
+  };
+  const row = headers.map(h => registro[h] ?? '');
+  if (existing > 0) sheet.getRange(existing+1,1,1,row.length).setValues([row]);
+  else sheet.appendRow(row);
+
+  return json({ok:true});
 }
 
 function getPins_() {
@@ -504,6 +560,13 @@ const SHEET_HEADERS = {
   // Catálogo de turnos de personal (Mañana/Noche, etc.) — informativo, no
   // tiene que ver con la apertura/cierre real de cada caja.
   turnos: ['id','nombre','horaInicio','horaFin','vendedorIds'],
+  // Acuse del empleado sobre su ticket de cierre, capturado en Legado
+  // Integral al escanear el QR que genera NovaPOS (buildCorteQrPayload).
+  // "folio" identifica el ticket (mismo folio que en "cortes"); no
+  // duplica los datos de "cortes", solo agrega lo que el empleado confirma
+  // desde esta app — sobre todo monto_entregado_admin, que NovaPOS deja en
+  // blanco a propósito porque ese paso es manual.
+  legado_turnos: ['id','folio','codigoEmpleado','nombreEmpleado','fecha','hora_apertura','hora_cierre','venta_turno','recargas_telefonicas','monto_entregado_admin','inventario_vendido','faltante','merma','confirmado_en'],
 };
 
 function getSheet(name) {
