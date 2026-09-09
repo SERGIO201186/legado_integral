@@ -257,7 +257,8 @@ async function cargarEmpleados() {
       r.empleados.map(e => `<option value="${e.id}">${e.nombre}</option>`).join('');
   } catch (err) {
     sel.innerHTML = '<option value="">No se pudo cargar la lista</option>';
-    showMsg('#login-msg', 'No se pudo conectar con el servidor. Revisa tu conexión e intenta de nuevo.', 'err');
+    const detalle = err && err.message ? ` (${err.message})` : '';
+    showMsg('#login-msg', 'No se pudo conectar con el servidor' + detalle + '. Revisa tu conexión e intenta de nuevo.', 'err');
   }
 }
 
