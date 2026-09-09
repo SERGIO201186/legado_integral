@@ -633,7 +633,26 @@ if (SESSION) mostrarLock();
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    // updateViaCache:'none' evita que el navegador conteste la revisión de
+    // sw.js con una copia guardada en su caché HTTP normal — sin esto, el
+    // propio mecanismo que detecta "hay una versión nueva del Service
+    // Worker" podía quedar atrapado sirviendo el sw.js viejo, y una
+    // actualización nunca llegaba a notarse aunque el archivo en el
+    // servidor ya hubiera cambiado. update() fuerza además una revisión
+    // inmediata en vez de esperar a que el navegador decida revisar solo.
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+      .then((reg) => reg.update())
+      .catch(() => {});
+  });
+  // Cuando un Service Worker nuevo toma el control (tras detectar un
+  // cambio en sw.js), recarga la pestaña ya abierta una sola vez — así el
+  // usuario recibe el código nuevo sin tener que cerrar y volver a abrir
+  // la app a mano.
+  let recargandoPorSW = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (recargandoPorSW) return;
+    recargandoPorSW = true;
+    window.location.reload();
   });
 }
 </script>
