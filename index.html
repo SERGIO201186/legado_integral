@@ -203,6 +203,7 @@
         <div class="field">
           <label>Faltante</label>
           <input type="text" inputmode="decimal" id="man-faltante" placeholder="0.00">
+          <p style="font-size:11.5px;color:#8a8378;margin:4px 0 0;">Si el correo dice "SOBRANTE" en vez de "FALTANTE", captúralo en negativo (ej. -128).</p>
         </div>
         <div class="field">
           <label>Merma</label>
@@ -500,7 +501,7 @@ function mostrarRevision(data) {
     ['Comisión de recargas', fmtMoney(data.comision_recargas)],
     ['Copias e impresiones vendidas', fmtMoney(data.copias_impresiones_vendidas)],
     ['Inventario vendido', fmtMoney(data.inventario_vendido)],
-    ['Faltante', fmtMoney(data.faltante)],
+    ['Faltante', fmtFaltante(data.faltante)],
     ['Merma', fmtMoney(data.merma)],
   ];
   $('#review-body').innerHTML = filas.map(([k, v]) =>
@@ -522,6 +523,16 @@ function mostrarRevision(data) {
 function fmtMoney(n) {
   if (n === undefined || n === null || n === '') return '—';
   return '$' + Number(n).toLocaleString('es-MX', { minimumFractionDigits: 2 });
+}
+
+// NovaPOS guarda "faltante" en negativo cuando en realidad sobró dinero
+// (efectivo contado > esperado) — mostrar "-128" tal cual confunde; el
+// correo "Resumen de turno" ya lo llama "SOBRANTE", así que aquí se
+// muestra igual de claro.
+function fmtFaltante(n) {
+  if (n === undefined || n === null || n === '') return '—';
+  const v = Number(n);
+  return v < 0 ? 'Sobrante ' + fmtMoney(Math.abs(v)) : fmtMoney(v);
 }
 
 $('#btn-rescan').addEventListener('click', () => {

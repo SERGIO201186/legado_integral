@@ -367,7 +367,11 @@ function handleBuscarFolio_(folio) {
       venta_turno: Math.round((Number(corte.ventasTotal) || 0) * 100) / 100,
       recargas_telefonicas: Math.round((Number(corte.recargasTotal) || 0) * 100) / 100,
       comision_recargas: Math.round((Number(corte.recargasComisionTotal) || 0) * 100) / 100,
-      copias_impresiones_vendidas: Math.round((Number(corte.copiasImpresionesVendidasTotal) || 0) * 100) / 100,
+      // '' (no 0) cuando el NovaPOS de este negocio todavía no guarda este
+      // dato en "cortes" (columna agregada después — versiones viejas de
+      // nova_codigo.gs no la tienen) — un 0 se vería como "ya lo revisé y
+      // no hubo", cuando en realidad es "este NovaPOS no lo registra".
+      copias_impresiones_vendidas: corte.copiasImpresionesVendidasTotal === undefined ? '' : Math.round((Number(corte.copiasImpresionesVendidasTotal) || 0) * 100) / 100,
       monto_entregado_admin: '',
       inventario_vendido: Math.round((Number(corte.ventasTotal) || 0) * 100) / 100,
       faltante: Math.round((Number(corte.faltante) || 0) * 100) / 100,
