@@ -310,14 +310,25 @@ function handleConfirmarTurno_(body) {
     fecha: body.fecha || '',
     hora_apertura: body.hora_apertura || '',
     hora_cierre: body.hora_cierre || '',
+    // venta_turno ya viene de NovaPOS con la comisión de recargas incluida
+    // (ventasTotal + recargasComisionTotal, ver LEGADOINTEGRALQRCIERRECAJA.md
+    // sección 3) — no existe un campo "comision_recargas" separado en el
+    // contrato real del QR/confirmar_turno, así que ya no se guarda aparte.
     venta_turno: Number(body.venta_turno) || 0,
     recargas_telefonicas: Number(body.recargas_telefonicas) || 0,
-    comision_recargas: Number(body.comision_recargas) || 0,
-    copias_impresiones_vendidas: Number(body.copias_impresiones_vendidas) || 0,
     monto_entregado_admin: Number(body.monto_entregado_admin) || 0,
     inventario_vendido: Number(body.inventario_vendido) || 0,
     faltante: Number(body.faltante) || 0,
     merma: Number(body.merma) || 0,
+    // Lecturas del medidor físico de la impresora (unidades, no dinero) —
+    // ver sección 3 de LEGADOINTEGRALQRCIERRECAJA.md. Se guardan aparte de
+    // copias_impresiones_vendido (dinero cobrado) porque son dos señales
+    // independientes que el negocio compara manualmente al auditar.
+    copias_bn_usadas: Number(body.copias_bn_usadas) || 0,
+    copias_color_usadas: Number(body.copias_color_usadas) || 0,
+    impresiones_bn_usadas: Number(body.impresiones_bn_usadas) || 0,
+    impresiones_color_usadas: Number(body.impresiones_color_usadas) || 0,
+    copias_impresiones_vendido: Number(body.copias_impresiones_vendido) || 0,
     confirmado_en: new Date().toISOString(),
   };
   const row = headers.map(h => registro[h] ?? '');
@@ -355,6 +366,15 @@ function handleBuscarFolio_(folio) {
   if (!corte) return json({ok:false, error:'No se encontró ese folio en NovaPOS'});
 
   const hhmm = iso => { const d = new Date(iso); return ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2); };
+  // '' (no 0) cuando el NovaPOS de este negocio todavía no guarda este dato
+  // en "cortes" (columna agregada después — versiones viejas de
+  // nova_codigo.gs no la tienen) — un 0 se vería como "ya lo revisé y no
+  // hubo", cuando en realidad es "este NovaPOS no lo registra". Mismo
+  // criterio para los 4 contadores de copias/impresiones.
+  const usados_ = (colApertura, colCierre) =>
+    (corte[colApertura] === undefined || corte[colCierre] === undefined)
+      ? '' : (Number(corte[colCierre]) || 0) - (Number(corte[colApertura]) || 0);
+
   return json({
     ok: true,
     data: {
@@ -364,18 +384,24 @@ function handleBuscarFolio_(folio) {
       fecha: String(corte.apertura || '').slice(0,10),
       hora_apertura: corte.apertura ? hhmm(corte.apertura) : '',
       hora_cierre: corte.cierre ? hhmm(corte.cierre) : '',
-      venta_turno: Math.round((Number(corte.ventasTotal) || 0) * 100) / 100,
+      // venta_turno = ventasTotal + recargasComisionTotal, misma fórmula que
+      // usa NovaPOS en buildCorteQrPayload (ver LEGADOINTEGRALQRCIERRECAJA.md
+      // sección 3) — la comisión de recargas sí es ganancia del negocio y
+      // cuenta como venta del turno, igual que en "TOTAL A ENTREGAR" del
+      // ticket impreso. Antes se regresaba solo ventasTotal (sin la
+      // comisión) y esta función la mandaba aparte como "comision_recargas",
+      // un campo que el contrato real del QR nunca tuvo.
+      venta_turno: Math.round(((Number(corte.ventasTotal) || 0) + (Number(corte.recargasComisionTotal) || 0)) * 100) / 100,
       recargas_telefonicas: Math.round((Number(corte.recargasTotal) || 0) * 100) / 100,
-      comision_recargas: Math.round((Number(corte.recargasComisionTotal) || 0) * 100) / 100,
-      // '' (no 0) cuando el NovaPOS de este negocio todavía no guarda este
-      // dato en "cortes" (columna agregada después — versiones viejas de
-      // nova_codigo.gs no la tienen) — un 0 se vería como "ya lo revisé y
-      // no hubo", cuando en realidad es "este NovaPOS no lo registra".
-      copias_impresiones_vendidas: corte.copiasImpresionesVendidasTotal === undefined ? '' : Math.round((Number(corte.copiasImpresionesVendidasTotal) || 0) * 100) / 100,
       monto_entregado_admin: '',
       inventario_vendido: Math.round((Number(corte.ventasTotal) || 0) * 100) / 100,
       faltante: Math.round((Number(corte.faltante) || 0) * 100) / 100,
       merma: 0,
+      copias_bn_usadas: usados_('contAperturaBn', 'contCierreBn'),
+      copias_color_usadas: usados_('contAperturaColor', 'contCierreColor'),
+      impresiones_bn_usadas: usados_('contAperturaImpBn', 'contCierreImpBn'),
+      impresiones_color_usadas: usados_('contAperturaImpColor', 'contCierreImpColor'),
+      copias_impresiones_vendido: corte.copiasImpresionesVendidasTotal === undefined ? '' : Math.round((Number(corte.copiasImpresionesVendidasTotal) || 0) * 100) / 100,
     },
   });
 }
@@ -736,7 +762,17 @@ const SHEET_HEADERS = {
   // duplica los datos de "cortes", solo agrega lo que el empleado confirma
   // desde esta app — sobre todo monto_entregado_admin, que NovaPOS deja en
   // blanco a propósito porque ese paso es manual.
-  legado_turnos: ['id','folio','codigoEmpleado','nombreEmpleado','fecha','hora_apertura','hora_cierre','venta_turno','recargas_telefonicas','comision_recargas','copias_impresiones_vendidas','monto_entregado_admin','inventario_vendido','faltante','merma','confirmado_en'],
+  //
+  // Columnas y nombres tal cual el contrato real del QR/confirmar_turno
+  // (ver LEGADOINTEGRALQRCIERRECAJA.md, secciones 3 y 5.2) — no hay un campo
+  // "comision_recargas" separado (venta_turno ya la incluye) y el nombre es
+  // "copias_impresiones_vendido" (singular). copias_bn_usadas/
+  // copias_color_usadas/impresiones_bn_usadas/impresiones_color_usadas son
+  // lecturas del medidor físico (unidades), no dinero — junto con faltante,
+  // merma y venta_turno son la materia prima para calcular los bonos de
+  // Ventas/Caja/Inventario una vez que se definan sus reglas (ver
+  // resumenMes_ más abajo).
+  legado_turnos: ['id','folio','codigoEmpleado','nombreEmpleado','fecha','hora_apertura','hora_cierre','venta_turno','recargas_telefonicas','monto_entregado_admin','inventario_vendido','faltante','merma','copias_bn_usadas','copias_color_usadas','impresiones_bn_usadas','impresiones_color_usadas','copias_impresiones_vendido','confirmado_en'],
 };
 
 function getSheet(name) {
