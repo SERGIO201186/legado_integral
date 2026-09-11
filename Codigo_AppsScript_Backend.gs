@@ -1222,6 +1222,25 @@ const SHEET_HEADERS = {
   // operativos de arriba: se suman al total del mes pero no cuentan para
   // "elegible_premio_maximo".
   servicios_funerarios: ['id','tipo','codigoEmpleado','nombreEmpleado','fecha','referencia','monto','capturado_en'],
+  // Bitácora de cómo se cobra/agenda el "premio máximo" del mes (los 4
+  // bonos operativos ganados el mismo mes) — el DUEÑO la captura a mano
+  // cuando el empleado elige. Ningún cálculo la usa (resumenMes_ ya decide
+  // solo con "elegible_premio_maximo" si el mes califica); esta hoja es
+  // solo el registro de la decisión y el pago, para que quede por escrito.
+  // Reglas acordadas (ver CONCURSO_LEGADO_INTEGRAL.md):
+  // - Los $1,500 en dinero de los 4 bonos (y de cualquier bono suelto) se
+  //   pagan en la quincena siguiente al cierre del mes.
+  // - "eleccion": "descanso" (toma el día libre) o "trabajado" (prefiere
+  //   trabajarlo y que se le pague doble ese día).
+  // - "fecha_elegida": obligatoria en ambos casos — el día de descanso, o
+  //   el día que decidió trabajar doble. Debe caer dentro del mes
+  //   siguiente al que ganó el premio, y NUNCA coincidir con su día de
+  //   descanso regular (turnos_asignados.dia_descanso). No es acumulable:
+  //   si no se agenda dentro de ese mes siguiente, se pierde.
+  // - "pagado"/"fecha_pago": si "eleccion" es "trabajado", el pago doble de
+  //   ese día sigue la misma regla de la quincena siguiente al mes en que
+  //   se trabajó (no al mes en que se ganó el premio).
+  premios_dia_libre: ['id','mes','codigoEmpleado','eleccion','fecha_elegida','pagado','fecha_pago','capturado_en'],
 };
 
 function getSheet(name) {
