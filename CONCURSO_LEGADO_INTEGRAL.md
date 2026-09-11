@@ -123,11 +123,36 @@ que el asesor funerario tenga que hacer ninguna labor de venta.
 | Aviso de Servicio Funerario | $200 | por servicio, sin tope |
 | Servicio Directo Recomendado | $700 | por servicio, sin tope |
 
-## 5. Pendientes de definir por el negocio
+## 5. Cuándo y cómo se paga
 
-- Tolerancia mensual de merma del Bono Inventario.
+- **Bonos operativos** (Ventas, Puntualidad, Caja, Inventario) y el combo
+  de $1,500: se pagan en la **quincena siguiente al cierre del mes** (el
+  mes de septiembre se paga en la quincena de octubre).
+- **Bonos por referido funerario** (Aviso de Servicio Funerario, Servicio
+  Directo Recomendado): se pagan **al día siguiente** de realizado el
+  servicio — no esperan a la quincena.
+- **Día de descanso del premio máximo** (ganar los 4 bonos operativos el
+  mismo mes): quien lo gana elige, dentro del **mes siguiente** al cierre,
+  una fecha para tomarlo.
+  - No puede coincidir con su día de descanso regular (el capturado en
+    `turnos_asignados`).
+  - **No es acumulable**: si no se agenda dentro de ese mes siguiente, se
+    pierde — no se puede guardar para más adelante.
+  - En vez de descansar, puede elegir **trabajar ese día** — en ese caso se
+    le paga **doble** por ese día (sigue la misma regla de la quincena
+    siguiente, pero del mes en que lo trabajó).
+  - El dueño registra la elección (y el pago) a mano en la hoja
+    `premios_dia_libre` — no hay ningún cálculo automático para esto, es
+    solo la bitácora de la decisión.
+
+## 6. Pendientes de definir por el negocio
+
+- Tolerancia mensual de merma del Bono Inventario — se recomienda medirla
+  **en dinero** (valor de lo perdido/dañado), no en piezas, para que sea
+  consistente con el Bono Caja y con cómo ya viene tipado el campo `merma`
+  en el contrato del QR de NovaPOS (monto en pesos, no conteo de unidades).
 - Poblar la hoja `turnos_asignados` con los 2 empleados actuales y su día
   de descanso (mientras no exista esa fila, el candado de "0 faltas" del
   Bono Puntualidad no se evalúa).
 - Revisar/ajustar el 5% de crecimiento de la meta de ventas si se quiere un
-  número distinto.
+  número distinto (ya es editable en la hoja `config` sin tocar código).
