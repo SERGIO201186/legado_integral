@@ -107,15 +107,17 @@ faltante o sobrante (cualquiera de los dos).
 
 ### 3.4 Bono Inventario — $250
 
-Se mide combinando la merma de **ambos turnos** (día + noche) de cada
-fecha, porque los 2 hacen su propio conteo de inventario al entrar y no se
-puede saber a cuál le faltó algo.
+Se gana si la merma combinada de **ambos turnos** (día + noche) en el mes
+no pasa de **$300**, medida en dinero (no en piezas) — perder un producto
+de $300 o 300 productos de $1 pesa igual para el bono; lo que cuenta es el
+valor total perdido.
 
-> ⚠️ **Pendiente:** todavía no está definido cuánta merma combinada se
-> tolera al mes. Mientras el dueño no capture ese número en la hoja
-> `config` (`bono_inventario_tolerancia_mensual`), este bono se calcula
-> pero **no se paga** — se ve el total real de merma del mes para que el
-> dueño lo revise.
+Se mide combinando la merma de los 2 turnos porque ambos hacen su propio
+conteo de inventario al entrar y no se puede saber a cuál le faltó algo —
+por eso los dos cuentan juntos para ganar (o perder) este bono. Cuando se
+detecta merma, se convierte a productos manualmente después (para saber
+*qué* faltó), pero eso no cambia si se gana o no el bono — solo importa el
+monto total.
 
 ## 4. Bonos por referido funerario
 
@@ -142,7 +144,7 @@ que el asesor funerario tenga que hacer ninguna labor de venta.
 | Ventas | $600 | 1 vez/mes |
 | Puntualidad | $400 | 1 vez/mes |
 | Caja | $250 | 1 vez/mes |
-| Inventario | $250 (pendiente de activar) | 1 vez/mes |
+| Inventario | $250 | 1 vez/mes |
 | **Los 4 juntos en el mismo mes** | **+$1,500 y día libre / pago doble** | — |
 | Aviso de Servicio Funerario | $200 | por servicio, sin tope |
 | Servicio Directo Recomendado | $700 | por servicio, sin tope |
@@ -171,10 +173,6 @@ que el asesor funerario tenga que hacer ninguna labor de venta.
 
 ## 7. Pendientes de definir por el negocio
 
-- Tolerancia mensual de merma del Bono Inventario — se recomienda medirla
-  **en dinero** (valor de lo perdido/dañado), no en piezas, para que sea
-  consistente con el Bono Caja y con cómo ya viene tipado el campo `merma`
-  en el contrato del QR de NovaPOS (monto en pesos, no conteo de unidades).
 - Poblar la hoja `turnos_asignados` con los 2 empleados actuales y su día
   de descanso (mientras no exista esa fila, el candado de "0 faltas" del
   Bono Puntualidad no se evalúa).
