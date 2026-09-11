@@ -802,11 +802,16 @@ function asegurarMetaVentas_(mesYYYYMM, turno) {
   }
 }
 
-// meta_sugerida = promedio diario real de venta del turno el mes anterior
+// meta_sugerida (diaria) = [venta TOTAL real del turno el mes anterior
 // (venta_turno + copias_impresiones_vendido, ver LEGADOINTEGRALQRCIERRECAJA.md)
-// más el % de crecimiento configurado. Si no hay ningún turno confirmado el
-// mes anterior (negocio nuevo en Legado Integral, o primer mes de este
-// turno), se usa el monto inicial acordado ($700 día / $400 noche).
+// × (1 + % de crecimiento configurado)] ÷ días del MES QUE SE ESTÁ
+// CALCULANDO (no los del mes anterior) — así, si el mes anterior tuvo 30
+// días y este tiene 31 (o al revés, o es febrero), la meta diaria se
+// reparte entre los días que de verdad tiene el mes en curso en vez de
+// arrastrar el promedio diario del mes pasado tal cual. Si no hay ningún
+// turno confirmado el mes anterior (negocio nuevo en Legado Integral, o
+// primer mes de este turno), se usa el monto inicial acordado ($700 día /
+// $400 noche) — ahí no hay ningún total que repartir todavía.
 function calcularMetaVentaSugerida_(mesYYYYMM, turno) {
   const [anio, mes] = mesYYYYMM.split('-').map(Number);
   const mesAnterior = new Date(anio, mes - 2, 1); // Date usa meses 0-11; "mes-2" retrocede uno
@@ -817,10 +822,11 @@ function calcularMetaVentaSugerida_(mesYYYYMM, turno) {
   if (!turnosMesAnterior.length) {
     return Number(getBonoConfig_(turno === 'dia' ? 'meta_ventas_dia_inicial' : 'meta_ventas_noche_inicial'));
   }
-  const totalVentas = turnosMesAnterior.reduce((s,t) => s + (Number(t.venta_turno)||0) + (Number(t.copias_impresiones_vendido)||0), 0);
-  const promedioDiario = totalVentas / turnosMesAnterior.length;
+  const totalVentasMesAnterior = turnosMesAnterior.reduce((s,t) => s + (Number(t.venta_turno)||0) + (Number(t.copias_impresiones_vendido)||0), 0);
   const pct = Number(getBonoConfig_('meta_ventas_crecimiento_pct'));
-  return Math.round(promedioDiario * (1 + pct/100));
+  const metaMensualNueva = totalVentasMesAnterior * (1 + pct/100);
+  const diasDelMesEnCurso = new Date(anio, mes, 0).getDate(); // último día de "mes" (1-indexado) = cuántos días tiene
+  return Math.round(metaMensualNueva / diasDelMesEnCurso);
 }
 
 function metaFinalDe_(meta) {
@@ -1121,11 +1127,14 @@ const SHEET_HEADERS = {
   // 4 bonos (ver también la hoja "metas_ventas" más abajo).
   legado_turnos: ['id','folio','codigoEmpleado','nombreEmpleado','fecha','hora_apertura','hora_cierre','venta_turno','recargas_telefonicas','monto_entregado_admin','inventario_vendido','faltante','merma','copias_bn_usadas','copias_color_usadas','impresiones_bn_usadas','impresiones_color_usadas','copias_impresiones_vendido','turno','retardo_apertura','retardo_cierre','motivo_retardo','retardo_justificado','confirmado_en'],
   // Meta diaria de venta por turno (día/noche) y mes — la genera sola
-  // asegurarMetaVentas_ la primera vez que se necesita ese mes
-  // (meta_sugerida = promedio diario real del mes anterior + % de
-  // crecimiento de "config", o el monto inicial acordado si no hay mes
-  // anterior). El DUEÑO la revisa aquí a mano: "aceptada" = TRUE usa
-  // meta_sugerida tal cual; si no, se usa lo que capture en "meta_manual".
+  // asegurarMetaVentas_ la primera vez que se necesita ese mes (meta_sugerida
+  // = venta TOTAL real del turno el mes anterior × (1 + % de crecimiento de
+  // "config"), repartida entre los días que tiene el mes que se está
+  // calculando — no los del mes anterior, para que un mes más corto o más
+  // largo que el anterior no herede el mismo promedio diario sin ajustar; o
+  // el monto inicial acordado si no hay mes anterior). El DUEÑO la revisa
+  // aquí a mano: "aceptada" = TRUE usa meta_sugerida tal cual; si no, se usa
+  // lo que capture en "meta_manual".
   // Ver metaFinalDe_/resumenMes_ en el código.
   metas_ventas: ['id','mes','turno','meta_sugerida','aceptada','meta_manual','generado_en'],
   // Quién tiene asignado cada uno de los 2 turnos (día/noche) y su día de
