@@ -178,5 +178,3 @@ que el asesor funerario tenga que hacer ninguna labor de venta.
 - Poblar la hoja `turnos_asignados` con los 2 empleados actuales y su día
   de descanso (mientras no exista esa fila, el candado de "0 faltas" del
   Bono Puntualidad no se evalúa).
-- Revisar/ajustar el 5% de crecimiento de la meta de ventas si se quiere un
-  número distinto (ya es editable en la hoja `config` sin tocar código).
