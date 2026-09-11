@@ -183,14 +183,11 @@
         <div class="field">
           <label>Venta del turno</label>
           <input type="text" inputmode="decimal" id="man-venta" placeholder="0.00">
+          <p style="font-size:11.5px;color:#8a8378;margin:4px 0 0;">Usa el "TOTAL A ENTREGAR" del ticket/correo — ya incluye la comisión de recargas.</p>
         </div>
         <div class="field">
           <label>Recargas telefónicas</label>
           <input type="text" inputmode="decimal" id="man-recargas" placeholder="0.00">
-        </div>
-        <div class="field">
-          <label>Comisión de recargas</label>
-          <input type="text" inputmode="decimal" id="man-comision-recargas" placeholder="0.00">
         </div>
         <div class="field">
           <label>Copias e impresiones vendidas</label>
@@ -222,6 +219,10 @@
         <div class="field" style="margin-top:10px;">
           <label>Entregado a administración</label>
           <input type="text" inputmode="decimal" id="input-entregado-admin" placeholder="0.00">
+        </div>
+        <div class="field" id="campo-motivo-retardo" hidden>
+          <label>Motivo del retraso</label>
+          <input type="text" id="input-motivo-retardo" placeholder="¿Qué pasó?">
         </div>
         <div id="review-msg" style="margin-top:10px;"></div>
         <div style="display:flex;gap:10px;margin-top:14px;">
@@ -362,19 +363,23 @@ $('#btn-login').addEventListener('click', async () => {
 
   $('#btn-login').disabled = true;
   $('#btn-login').textContent = 'Verificando…';
-  const r = await apiGet({ action: 'resumen', id, nip });
-  $('#btn-login').disabled = false;
-  $('#btn-login').textContent = 'Ingresar';
-
-  if (!r.ok) {
+  try {
+    const r = await conLimiteDeTiempo(apiGet({ action: 'resumen', id, nip }), 25000);
+    if (!r.ok) {
+      pinLogin.reset();
+      return showMsg('#login-msg', r.error || 'No se pudo iniciar sesión.', 'err');
+    }
+    SESSION = { id, nip, nombre: r.empleado.nombre };
+    localStorage.setItem('legado_session', JSON.stringify(SESSION));
     pinLogin.reset();
-    return showMsg('#login-msg', r.error || 'No se pudo iniciar sesión.', 'err');
+    entrarApp();
+  } catch (err) {
+    const detalle = err && err.message ? ` (${err.message})` : '';
+    showMsg('#login-msg', 'No se pudo conectar con el servidor' + detalle + '. Intenta de nuevo.', 'err');
+  } finally {
+    $('#btn-login').disabled = false;
+    $('#btn-login').textContent = 'Ingresar';
   }
-
-  SESSION = { id, nip, nombre: r.empleado.nombre };
-  localStorage.setItem('legado_session', JSON.stringify(SESSION));
-  pinLogin.reset();
-  entrarApp();
 });
 
 function entrarApp() {
@@ -402,18 +407,22 @@ $('#btn-unlock').addEventListener('click', async () => {
 
   $('#btn-unlock').disabled = true;
   $('#btn-unlock').textContent = 'Verificando…';
-  const r = await apiGet({ action: 'resumen', id: SESSION.id, nip });
-  $('#btn-unlock').disabled = false;
-  $('#btn-unlock').textContent = 'Desbloquear';
-
-  if (!r.ok) {
-    pinLock.reset();
-    return showMsg('#lock-msg', r.error || 'NIP incorrecto.', 'err');
+  try {
+    const r = await conLimiteDeTiempo(apiGet({ action: 'resumen', id: SESSION.id, nip }), 25000);
+    if (!r.ok) {
+      pinLock.reset();
+      return showMsg('#lock-msg', r.error || 'NIP incorrecto.', 'err');
+    }
+    SESSION = { id: SESSION.id, nip, nombre: r.empleado.nombre };
+    localStorage.setItem('legado_session', JSON.stringify(SESSION));
+    entrarApp();
+  } catch (err) {
+    const detalle = err && err.message ? ` (${err.message})` : '';
+    showMsg('#lock-msg', 'No se pudo conectar con el servidor' + detalle + '. Intenta de nuevo.', 'err');
+  } finally {
+    $('#btn-unlock').disabled = false;
+    $('#btn-unlock').textContent = 'Desbloquear';
   }
-
-  SESSION = { id: SESSION.id, nip, nombre: r.empleado.nombre };
-  localStorage.setItem('legado_session', JSON.stringify(SESSION));
-  entrarApp();
 });
 
 $('#btn-switch-user').addEventListener('click', () => {
@@ -484,8 +493,46 @@ function onEscaneoExitoso(texto) {
   mostrarRevision(data);
 }
 
+// Reglas del Bono Puntualidad (acordadas 2026-09-10) — deben coincidir con
+// los valores por defecto de BONOS_DEFAULTS en Codigo_AppsScript_Backend.gs
+// (turno_corte_hora, bono_puntualidad_apertura_hhmm/cierre_hhmm/tolerancia).
+// Si el dueño cambia esos valores en la hoja "config", hay que actualizarlos
+// aquí también — el frontend no tiene forma de leer "config" en vivo, así
+// que esto es solo para mostrar el aviso a tiempo; el backend es quien de
+// verdad decide si cuenta como retardo (ver handleConfirmarTurno_).
+const PUNTUALIDAD = { turnoCorteHora: 14, aperturaEsperada: '08:00', cierreEsperado: '20:00', toleranciaMin: 15 };
+
+function detectarTurnoCliente_(horaApertura) {
+  const hora = parseInt(String(horaApertura || '').split(':')[0], 10);
+  if (isNaN(hora)) return '';
+  return hora < PUNTUALIDAD.turnoCorteHora ? 'dia' : 'noche';
+}
+function minutosDeRetraso_(horaReal, horaEsperada) {
+  const r = String(horaReal || '').split(':').map(Number);
+  const e = String(horaEsperada || '').split(':').map(Number);
+  if (r.length < 2 || e.length < 2 || r.some(isNaN) || e.some(isNaN)) return 0;
+  return (r[0]*60 + r[1]) - (e[0]*60 + e[1]);
+}
+
 function mostrarRevision(data) {
   window.__pendingScan = data;
+  // Si el ticket es de otro empleado, no basta con avisar: antes solo se
+  // mostraba una advertencia pero el botón "Confirmar y enviar" seguía
+  // activo y mandaba el turno de todos modos (con los datos del ticket
+  // ajeno) — eso atribuía mal el turno y ensuciaba las métricas de bonos de
+  // ambos empleados. Ahora bloquea el envío de verdad (ver btn-confirm).
+  window.__scanMismatch = String(data.id_empleado).trim() !== SESSION.id;
+
+  // Solo se checan los 2 extremos del día con horario oficial acordado: la
+  // apertura del turno día (8:00) y el cierre del turno noche (20:00) — el
+  // relevo de en medio todavía no tiene una hora fija.
+  const turno = detectarTurnoCliente_(data.hora_apertura);
+  const retardoApertura = turno === 'dia' && minutosDeRetraso_(data.hora_apertura, PUNTUALIDAD.aperturaEsperada) > PUNTUALIDAD.toleranciaMin;
+  const retardoCierre = turno === 'noche' && minutosDeRetraso_(data.hora_cierre, PUNTUALIDAD.cierreEsperado) > PUNTUALIDAD.toleranciaMin;
+  window.__scanRetardo = retardoApertura || retardoCierre;
+  $('#campo-motivo-retardo').hidden = !window.__scanRetardo;
+  $('#input-motivo-retardo').value = '';
+
   $('#scan-idle').hidden = true;
   $('#scan-review').hidden = false;
   showMsg('#review-msg', '', '');
@@ -498,8 +545,11 @@ function mostrarRevision(data) {
     ['Hora cierre', data.hora_cierre],
     ['Venta del turno', fmtMoney(data.venta_turno)],
     ['Recargas telefónicas', fmtMoney(data.recargas_telefonicas)],
-    ['Comisión de recargas', fmtMoney(data.comision_recargas)],
-    ['Copias e impresiones vendidas', fmtMoney(data.copias_impresiones_vendidas)],
+    ['Copias e impresiones vendidas', fmtMoney(data.copias_impresiones_vendido)],
+    ['Copias B/N usadas', data.copias_bn_usadas ?? '—'],
+    ['Copias color usadas', data.copias_color_usadas ?? '—'],
+    ['Impresiones B/N usadas', data.impresiones_bn_usadas ?? '—'],
+    ['Impresiones color usadas', data.impresiones_color_usadas ?? '—'],
     ['Inventario vendido', fmtMoney(data.inventario_vendido)],
     ['Faltante', fmtFaltante(data.faltante)],
     ['Merma', fmtMoney(data.merma)],
@@ -513,8 +563,10 @@ function mostrarRevision(data) {
   // escanear un ticket ya confirmado antes), se precarga para no perderlo.
   $('#input-entregado-admin').value = data.monto_entregado_admin || '';
 
-  if (String(data.id_empleado).trim() !== SESSION.id) {
-    showMsg('#review-msg', 'Este ticket pertenece a otro número de empleado. Verifica que sea tu turno.', 'warn');
+  if (window.__scanMismatch) {
+    showMsg('#review-msg', 'Este ticket pertenece a otro número de empleado. No puedes confirmarlo desde tu sesión.', 'err');
+  } else if (window.__scanRetardo) {
+    showMsg('#review-msg', '⚠️ Este turno se abrió tarde o se cerró después de tu horario. Indica el motivo abajo antes de confirmar.', 'warn');
   } else if (data.v !== undefined && data.v !== QR_SCHEMA_VERSION) {
     showMsg('#review-msg', 'Este ticket usa una versión de NovaPOS más reciente; revisa los datos con cuidado antes de enviar.', 'warn');
   }
@@ -549,7 +601,7 @@ $('#btn-rescan').addEventListener('click', () => {
 // mostrarRevision/btn-confirm tal cual — el backend no distingue si el
 // ticket vino de la cámara o de este formulario.
 function limpiarFormularioManual() {
-  ['#man-folio','#man-fecha','#man-hora-apertura','#man-hora-cierre','#man-venta','#man-recargas','#man-comision-recargas','#man-copias','#man-inventario','#man-faltante','#man-merma']
+  ['#man-folio','#man-fecha','#man-hora-apertura','#man-hora-cierre','#man-venta','#man-recargas','#man-copias','#man-inventario','#man-faltante','#man-merma']
     .forEach(sel => { $(sel).value = ''; });
   showMsg('#manual-msg', '', '');
   showMsg('#buscar-folio-msg', '', '');
@@ -600,8 +652,7 @@ $('#btn-buscar-folio').addEventListener('click', async () => {
     $('#man-hora-cierre').value = d.hora_cierre || '';
     $('#man-venta').value = d.venta_turno ?? '';
     $('#man-recargas').value = d.recargas_telefonicas ?? '';
-    $('#man-comision-recargas').value = d.comision_recargas ?? '';
-    $('#man-copias').value = d.copias_impresiones_vendidas ?? '';
+    $('#man-copias').value = d.copias_impresiones_vendido ?? '';
     $('#man-inventario').value = d.inventario_vendido ?? '';
     $('#man-faltante').value = d.faltante ?? '';
     $('#man-merma').value = d.merma ?? '';
@@ -630,8 +681,10 @@ $('#btn-manual-continuar').addEventListener('click', () => {
     hora_cierre: $('#man-hora-cierre').value || '',
     venta_turno: num('#man-venta'),
     recargas_telefonicas: num('#man-recargas'),
-    comision_recargas: num('#man-comision-recargas'),
-    copias_impresiones_vendidas: num('#man-copias'),
+    copias_impresiones_vendido: num('#man-copias'),
+    // Los 4 contadores de medidor (copias_bn_usadas, etc.) no se capturan a
+    // mano: el correo "Resumen de turno" no trae ese dato por separado, solo
+    // el escaneo del QR real lo incluye. Quedan en 0, igual que "merma".
     inventario_vendido: num('#man-inventario'),
     faltante: num('#man-faltante'),
     merma: num('#man-merma'),
@@ -644,44 +697,74 @@ $('#btn-manual-continuar').addEventListener('click', () => {
 $('#btn-confirm').addEventListener('click', async () => {
   const data = window.__pendingScan;
   if (!data) return;
+  if (window.__scanMismatch) {
+    return showMsg('#review-msg', 'Este ticket pertenece a otro número de empleado. No puedes confirmarlo desde tu sesión.', 'err');
+  }
 
   const entregadoAdmin = $('#input-entregado-admin').value.trim();
   if (entregadoAdmin === '' || isNaN(Number(entregadoAdmin))) {
     return showMsg('#review-msg', 'Captura cuánto entregaste a administración.', 'err');
   }
+  const motivoRetardo = $('#input-motivo-retardo').value.trim();
+  if (window.__scanRetardo && !motivoRetardo) {
+    return showMsg('#review-msg', 'Indica el motivo del retraso antes de confirmar.', 'err');
+  }
 
   $('#btn-confirm').disabled = true;
   $('#btn-confirm').textContent = 'Enviando…';
+  showMsg('#review-msg', '', '');
 
+  // data.id_empleado ya viene validado (mostrarRevision bloquea el envío si
+  // no coincide con la sesión) — antes aquí se forzaba id_empleado a
+  // SESSION.id sin importar de quién era el ticket, así que un ticket ajeno
+  // se guardaba igual, solo que atribuido a la persona equivocada.
   const payload = Object.assign({}, data, {
     action: 'confirmar_turno',
-    id_empleado: SESSION.id,
     nip: SESSION.nip,
     monto_entregado_admin: Number(entregadoAdmin),
+    motivo_retardo: motivoRetardo,
   });
-  const r = await apiPost(payload);
 
-  $('#btn-confirm').disabled = false;
-  $('#btn-confirm').textContent = 'Confirmar y enviar';
-
-  if (!r.ok) {
-    showMsg('#review-msg', r.error || 'No se pudo registrar el turno.', 'err');
-    return;
+  // Sin try/catch, un fetch que truena (sin conexión, el backend tarda más
+  // de lo que el navegador espera) dejaba el botón trabado en "Enviando…"
+  // para siempre y sin avisar ningún error — el empleado veía la pantalla
+  // "colgada", asumía que ya se había registrado o simplemente cerraba la
+  // app, y el turno nunca llegaba a "legado_turnos". Mismo patrón de
+  // conLimiteDeTiempo + try/catch/finally que ya usa btn-buscar-folio.
+  try {
+    const r = await conLimiteDeTiempo(apiPost(payload), 25000);
+    if (!r.ok) {
+      showMsg('#review-msg', r.error || 'No se pudo registrar el turno.', 'err');
+      return;
+    }
+    showMsg('#review-msg', 'Turno registrado correctamente. ✔', 'ok');
+    setTimeout(() => {
+      ultimoQR = null;
+      $('#scan-review').hidden = true;
+      $('#scan-idle').hidden = false;
+      cargarProgreso();
+    }, 1400);
+  } catch (err) {
+    const detalle = err && err.message ? ` (${err.message})` : '';
+    showMsg('#review-msg', 'No se pudo conectar para registrar el turno' + detalle + '. Vuelve a intentarlo — no se guardó nada todavía.', 'err');
+  } finally {
+    $('#btn-confirm').disabled = false;
+    $('#btn-confirm').textContent = 'Confirmar y enviar';
   }
-  showMsg('#review-msg', 'Turno registrado correctamente. ✔', 'ok');
-  setTimeout(() => {
-    ultimoQR = null;
-    $('#scan-review').hidden = true;
-    $('#scan-idle').hidden = false;
-    cargarProgreso();
-  }, 1400);
 });
 
 // -------------------- Mi Progreso --------------------
 async function cargarProgreso() {
   const cont = $('#progress-body');
   cont.innerHTML = '<div class="loading">Cargando tu progreso…</div>';
-  const r = await apiGet({ action: 'resumen', id: SESSION.id, nip: SESSION.nip });
+  let r;
+  try {
+    r = await conLimiteDeTiempo(apiGet({ action: 'resumen', id: SESSION.id, nip: SESSION.nip }), 25000);
+  } catch (err) {
+    const detalle = err && err.message ? ` (${err.message})` : '';
+    cont.innerHTML = `<div class="msg err">No se pudo conectar con el servidor${detalle}.</div>`;
+    return;
+  }
   if (!r.ok) {
     cont.innerHTML = `<div class="msg err">${r.error || 'No se pudo cargar tu progreso.'}</div>`;
     return;
@@ -693,7 +776,7 @@ async function cargarProgreso() {
   if (m.elegible_premio_maximo) {
     html += `<div class="banner-gold"><b>¡Excelencia total del mes!</b>Ganaste los 4 bonos — día libre / pago doble.</div>`;
   } else if (m.mensaje) {
-    html += `<div class="msg ok">${m.mensaje}</div>`;
+    html += `<div class="msg warn">${m.mensaje}</div>`;
   }
 
   html += `<div class="card">
@@ -706,10 +789,13 @@ async function cargarProgreso() {
 
   html += `<div class="card">
     <h3 class="section">Bonos de ${m.mes}</h3>
-    <div class="bono"><span class="nombre">Bono Ventas (20+ días de meta)</span><span class="monto ${m.bono_ventas ? 'ganado' : 'no'}">$${m.bono_ventas}</span></div>
-    <div class="bono"><span class="nombre">Bono Puntualidad (0 retardos)</span><span class="monto ${m.bono_puntualidad ? 'ganado' : 'no'}">$${m.bono_puntualidad}</span></div>
+    <div class="bono"><span class="nombre">Días con meta de venta</span><span class="monto ${m.dias_con_meta >= m.dias_meta_requeridos ? 'ganado' : 'no'}">${m.dias_con_meta}/${m.dias_meta_requeridos}</span></div>
+    <div class="bono"><span class="nombre">Bono Ventas</span><span class="monto ${m.bono_ventas ? 'ganado' : 'no'}">$${m.bono_ventas}</span></div>
+    <div class="bono"><span class="nombre">Bono Puntualidad (faltas del mes: ${m.dias_falta})</span><span class="monto ${m.bono_puntualidad ? 'ganado' : 'no'}">$${m.bono_puntualidad}</span></div>
     <div class="bono"><span class="nombre">Bono Caja</span><span class="monto ${m.bono_caja ? 'ganado' : 'no'}">$${m.bono_caja}</span></div>
-    <div class="bono"><span class="nombre">Bono Inventario</span><span class="monto ${m.bono_inventario ? 'ganado' : 'no'}">$${m.bono_inventario}</span></div>
+    <div class="bono"><span class="nombre">Bono Inventario (merma combinada del mes: $${m.merma_total_mes})</span><span class="monto ${m.bono_inventario ? 'ganado' : 'no'}">$${m.bono_inventario}</span></div>
+    <div class="bono"><span class="nombre">Avisos de servicio funerario (${m.avisos_funerarios_count})</span><span class="monto ${m.bono_avisos_funerarios ? 'ganado' : 'no'}">$${m.bono_avisos_funerarios}</span></div>
+    <div class="bono"><span class="nombre">Servicios directos recomendados (${m.servicios_recomendados_count})</span><span class="monto ${m.bono_servicios_recomendados ? 'ganado' : 'no'}">$${m.bono_servicios_recomendados}</span></div>
     <div class="bono" style="border-top:1.5px solid #E4DDD1;padding-top:12px;margin-top:4px;"><span class="nombre" style="font-weight:700;">Total del mes</span><span class="monto ganado" style="font-size:16px;">$${m.total_bonos}</span></div>
   </div>`;
 

@@ -295,12 +295,39 @@ function handleConfirmarTurno_(body) {
     return json({ok:false, error:'NIP incorrecto'});
   }
 
+  // El turno (día/noche) no lo manda el QR de NovaPOS. Primero se busca en
+  // "turnos_asignados" (quién tiene asignado cada turno, ver más abajo) —
+  // es más confiable porque los 2 turnos siempre son las mismas 2 personas
+  // (salvo que alguien renuncie). Si ese día no hay ninguna asignación
+  // vigente para este empleado (roster todavía no capturado, o suplencia
+  // sin registrar), se cae al viejo criterio por hora de apertura.
+  const asignacionActual = body.fecha ? asignacionVigenteEn_(asignacionesTurno_(), empleado.id, new Date(body.fecha)) : null;
+  const turno = asignacionActual ? asignacionActual.turno : detectarTurno_(body.hora_apertura);
+  // El bono de Puntualidad solo se checa en los 2 extremos del día que sí
+  // tienen horario oficial acordado: la apertura del turno día (8:00) y el
+  // cierre del turno noche (20:00) — el relevo de en medio (cierre del
+  // turno día = apertura del turno noche, es el mismo momento) no tiene una
+  // hora fija propia.
+  const tolerancia = Number(getBonoConfig_('bono_puntualidad_tolerancia_min'));
+  const retardoApertura = turno === 'dia'
+    && minutosDeRetraso_(body.hora_apertura, getBonoConfig_('bono_puntualidad_apertura_hhmm')) > tolerancia;
+  const retardoCierre = turno === 'noche'
+    && minutosDeRetraso_(body.hora_cierre, getBonoConfig_('bono_puntualidad_cierre_hhmm')) > tolerancia;
+  if ((retardoApertura || retardoCierre) && !String(body.motivo_retardo || '').trim()) {
+    return json({ok:false, error:'Faltó indicar el motivo del retraso.'});
+  }
+
   const sheet = getSheet('legado_turnos');
   const headers = ensureHeaders_(sheet, 'legado_turnos');
   const rows = sheet.getDataRange().getValues();
   const folioCol = headers.indexOf('folio');
   const idCol = headers.indexOf('id');
   const existing = rows.findIndex((r,i) => i>0 && r[folioCol] === body.folio);
+  // "retardo_justificado" lo marca el dueño a mano en la hoja (excepción de
+  // relevo, ver LEGADOINTEGRALQRCIERRECAJA.md) — si el empleado vuelve a
+  // escanear/reenviar el mismo folio, no se debe perder ese juicio manual.
+  const justificadoCol = headers.indexOf('retardo_justificado');
+  const retardoJustificadoPrevio = (existing > 0 && justificadoCol >= 0) ? rows[existing][justificadoCol] : '';
 
   const registro = {
     id: existing > 0 ? rows[existing][idCol] : Utilities.getUuid(),
@@ -310,14 +337,30 @@ function handleConfirmarTurno_(body) {
     fecha: body.fecha || '',
     hora_apertura: body.hora_apertura || '',
     hora_cierre: body.hora_cierre || '',
+    turno,
+    retardo_apertura: retardoApertura,
+    retardo_cierre: retardoCierre,
+    motivo_retardo: body.motivo_retardo || '',
+    retardo_justificado: retardoJustificadoPrevio,
+    // venta_turno ya viene de NovaPOS con la comisión de recargas incluida
+    // (ventasTotal + recargasComisionTotal, ver LEGADOINTEGRALQRCIERRECAJA.md
+    // sección 3) — no existe un campo "comision_recargas" separado en el
+    // contrato real del QR/confirmar_turno, así que ya no se guarda aparte.
     venta_turno: Number(body.venta_turno) || 0,
     recargas_telefonicas: Number(body.recargas_telefonicas) || 0,
-    comision_recargas: Number(body.comision_recargas) || 0,
-    copias_impresiones_vendidas: Number(body.copias_impresiones_vendidas) || 0,
     monto_entregado_admin: Number(body.monto_entregado_admin) || 0,
     inventario_vendido: Number(body.inventario_vendido) || 0,
     faltante: Number(body.faltante) || 0,
     merma: Number(body.merma) || 0,
+    // Lecturas del medidor físico de la impresora (unidades, no dinero) —
+    // ver sección 3 de LEGADOINTEGRALQRCIERRECAJA.md. Se guardan aparte de
+    // copias_impresiones_vendido (dinero cobrado) porque son dos señales
+    // independientes que el negocio compara manualmente al auditar.
+    copias_bn_usadas: Number(body.copias_bn_usadas) || 0,
+    copias_color_usadas: Number(body.copias_color_usadas) || 0,
+    impresiones_bn_usadas: Number(body.impresiones_bn_usadas) || 0,
+    impresiones_color_usadas: Number(body.impresiones_color_usadas) || 0,
+    copias_impresiones_vendido: Number(body.copias_impresiones_vendido) || 0,
     confirmado_en: new Date().toISOString(),
   };
   const row = headers.map(h => registro[h] ?? '');
@@ -355,6 +398,15 @@ function handleBuscarFolio_(folio) {
   if (!corte) return json({ok:false, error:'No se encontró ese folio en NovaPOS'});
 
   const hhmm = iso => { const d = new Date(iso); return ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2); };
+  // '' (no 0) cuando el NovaPOS de este negocio todavía no guarda este dato
+  // en "cortes" (columna agregada después — versiones viejas de
+  // nova_codigo.gs no la tienen) — un 0 se vería como "ya lo revisé y no
+  // hubo", cuando en realidad es "este NovaPOS no lo registra". Mismo
+  // criterio para los 4 contadores de copias/impresiones.
+  const usados_ = (colApertura, colCierre) =>
+    (corte[colApertura] === undefined || corte[colCierre] === undefined)
+      ? '' : (Number(corte[colCierre]) || 0) - (Number(corte[colApertura]) || 0);
+
   return json({
     ok: true,
     data: {
@@ -364,18 +416,24 @@ function handleBuscarFolio_(folio) {
       fecha: String(corte.apertura || '').slice(0,10),
       hora_apertura: corte.apertura ? hhmm(corte.apertura) : '',
       hora_cierre: corte.cierre ? hhmm(corte.cierre) : '',
-      venta_turno: Math.round((Number(corte.ventasTotal) || 0) * 100) / 100,
+      // venta_turno = ventasTotal + recargasComisionTotal, misma fórmula que
+      // usa NovaPOS en buildCorteQrPayload (ver LEGADOINTEGRALQRCIERRECAJA.md
+      // sección 3) — la comisión de recargas sí es ganancia del negocio y
+      // cuenta como venta del turno, igual que en "TOTAL A ENTREGAR" del
+      // ticket impreso. Antes se regresaba solo ventasTotal (sin la
+      // comisión) y esta función la mandaba aparte como "comision_recargas",
+      // un campo que el contrato real del QR nunca tuvo.
+      venta_turno: Math.round(((Number(corte.ventasTotal) || 0) + (Number(corte.recargasComisionTotal) || 0)) * 100) / 100,
       recargas_telefonicas: Math.round((Number(corte.recargasTotal) || 0) * 100) / 100,
-      comision_recargas: Math.round((Number(corte.recargasComisionTotal) || 0) * 100) / 100,
-      // '' (no 0) cuando el NovaPOS de este negocio todavía no guarda este
-      // dato en "cortes" (columna agregada después — versiones viejas de
-      // nova_codigo.gs no la tienen) — un 0 se vería como "ya lo revisé y
-      // no hubo", cuando en realidad es "este NovaPOS no lo registra".
-      copias_impresiones_vendidas: corte.copiasImpresionesVendidasTotal === undefined ? '' : Math.round((Number(corte.copiasImpresionesVendidasTotal) || 0) * 100) / 100,
       monto_entregado_admin: '',
       inventario_vendido: Math.round((Number(corte.ventasTotal) || 0) * 100) / 100,
       faltante: Math.round((Number(corte.faltante) || 0) * 100) / 100,
       merma: 0,
+      copias_bn_usadas: usados_('contAperturaBn', 'contCierreBn'),
+      copias_color_usadas: usados_('contAperturaColor', 'contCierreColor'),
+      impresiones_bn_usadas: usados_('contAperturaImpBn', 'contCierreImpBn'),
+      impresiones_color_usadas: usados_('contAperturaImpColor', 'contCierreImpColor'),
+      copias_impresiones_vendido: corte.copiasImpresionesVendidasTotal === undefined ? '' : Math.round((Number(corte.copiasImpresionesVendidasTotal) || 0) * 100) / 100,
     },
   });
 }
@@ -516,11 +574,8 @@ function debugEmpleadosLogin() {
 
 // Valida el NIP contra el directorio de empleados propio de Legado Integral
 // (columna "NIP de Acceso a Apps de la Empresa" en Directorio_Alta_Empleados,
-// ver getEmpleadosLogin_ arriba) y regresa su progreso. Los 4 bonos quedan
-// en $0 por ahora: sus reglas (meta de venta, tolerancia de retardo,
-// montos) todavía no están definidas en ningún lado — mostrar un número
-// inventado aquí pagaría bonos con un criterio que nadie acordó. Cuando se
-// definan las reglas, calcularlas aquí dentro de resumenMes_.
+// ver getEmpleadosLogin_ arriba) y regresa su progreso, incluyendo el
+// cálculo real de los 4 bonos (ver resumenMes_ más abajo).
 function handleResumenLogin_(codigoEmpleado, nip) {
   if (!codigoEmpleado || !nip) return json({ok:false, error:'Falta empleado o NIP'});
   const empleado = getEmpleadosLogin_().find(e => String(e.id) === String(codigoEmpleado));
@@ -533,8 +588,176 @@ function handleResumenLogin_(codigoEmpleado, nip) {
     ok: true,
     empleado: { id: empleado.id, nombre: empleado.nombre },
     semana: resumenSemana_(codigoEmpleado),
-    mes: resumenMes_(),
+    mes: resumenMes_(codigoEmpleado),
   });
+}
+
+// -------------------------------------------------------------------------
+// Configuración de los 4 bonos — todo editable sin tocar código: agrega o
+// edita la fila correspondiente en la hoja "config" (columnas "key","value")
+// para cambiar cualquiera de estos valores. Si la fila no existe todavía se
+// usa el valor por defecto de BONOS_DEFAULTS. Reglas acordadas el
+// 2026-09-10; ver conversación/PR para el detalle de cada una.
+// -------------------------------------------------------------------------
+const BONOS_DEFAULTS = {
+  // Hora (0-23) que separa el turno "dia" del turno "noche" según la hora
+  // de apertura del corte — el relevo real ocurre a mitad del día, entre el
+  // fin del turno día (8:00) y el cierre del turno noche (20:00), y no hay
+  // una hora fija acordada para ese relevo todavía.
+  turno_corte_hora: 14,
+  // Meta diaria de venta (venta_turno + copias_impresiones_vendido) del
+  // PRIMER mes del que hay historial, por turno — de ahí en adelante la
+  // meta se recalcula sola en metas_ventas (ver asegurarMetaVentas_).
+  meta_ventas_dia_inicial: 700,
+  meta_ventas_noche_inicial: 400,
+  // % de crecimiento que se le suma al promedio diario real del mes
+  // anterior para sugerir la meta del mes actual. ⚠️ Número de arranque —
+  // AJÚSTALO en la hoja "config" (key "meta_ventas_crecimiento_pct") al
+  // porcentaje que el negocio realmente quiera exigir mes a mes.
+  meta_ventas_crecimiento_pct: 5,
+  // Días del mes en que hay que alcanzar la meta diaria de tu turno.
+  bono_ventas_dias_meta: 20,
+  bono_ventas_monto: 600,
+  bono_puntualidad_apertura_hhmm: '08:00',
+  bono_puntualidad_cierre_hhmm: '20:00',
+  bono_puntualidad_tolerancia_min: 15,
+  // Retardos (no justificados) tolerados por semana antes de perder el
+  // bono — no es "cuántos se permiten en total", es "más de esto en UNA
+  // sola semana ya lo pierde".
+  bono_puntualidad_retardos_max_semana: 1,
+  bono_puntualidad_monto: 400,
+  // Suma de faltantes (no sobrantes) tolerada en TODO el mes.
+  bono_caja_tolerancia_mensual: 100,
+  // Turnos con faltante O sobrante (cualquiera de los dos) tolerados por
+  // semana — más de esto en una semana lo pierde aunque el mes siga dentro
+  // de la tolerancia de $100.
+  bono_caja_max_incidencias_semana: 1,
+  bono_caja_monto: 250,
+  bono_inventario_monto: 250,
+  // ⚠️ "bono_inventario_tolerancia_mensual" TODAVÍA NO EXISTE aquí a
+  // propósito: falta acordar cuánta merma combinada de los 2 turnos (ver
+  // resumenMes_) se tolera al mes. Sin ese número no se puede decidir si se
+  // gana el bono o no — se calcula el total real para que el dueño lo vea,
+  // pero el bono se queda en $0 hasta que se capture ese valor en "config".
+
+  // Bonos por referido funerario — independientes de los 4 de arriba (no
+  // cuentan para "elegible_premio_maximo"), sin tope: se pagan por cada
+  // servicio que el DUEÑO registre a mano en la hoja "servicios_funerarios"
+  // (ver serviciosFunerariosDelEmpleadoEntre_/resumenMes_). Son el monto por
+  // defecto cuando la fila no trae su propio "monto" — una fila SÍ puede
+  // traer un monto distinto (por si el monto oficial cambia con el tiempo,
+  // los registros viejos no deben moverse).
+  bono_aviso_funerario_monto: 200,     // "Aviso de servicio funerario": Funerales Huerta avisó y el servicio se realizó, por referencia de este empleado.
+  bono_servicio_recomendado_monto: 700, // "Servicio directo recomendado": el cliente llegó directo con la referencia del empleado, sin que el asesor hiciera labor de venta.
+};
+
+function getBonoConfig_(key) {
+  const valor = getConfigMap_()[key];
+  return (valor === undefined || valor === '') ? BONOS_DEFAULTS[key] : valor;
+}
+
+// Ticket sin hora de apertura (viejo, o captura manual incompleta) regresa
+// '' — no se puede clasificar ni evaluar puntualidad para ese turno.
+function detectarTurno_(horaApertura) {
+  const hora = parseInt(String(horaApertura || '').split(':')[0], 10);
+  if (isNaN(hora)) return '';
+  return hora < Number(getBonoConfig_('turno_corte_hora')) ? 'dia' : 'noche';
+}
+
+// Minutos de diferencia entre una hora real "HH:MM" y una esperada
+// "HH:MM" — positivo cuando la real es DESPUÉS de la esperada (retraso).
+function minutosDeRetraso_(horaReal, horaEsperada) {
+  const r = String(horaReal || '').split(':').map(Number);
+  const e = String(horaEsperada || '').split(':').map(Number);
+  if (r.length < 2 || e.length < 2 || r.some(isNaN) || e.some(isNaN)) return 0;
+  return (r[0]*60 + r[1]) - (e[0]*60 + e[1]);
+}
+
+function filaAObjeto_(headers, row) {
+  return Object.fromEntries(headers.map((h,i) => [h, row[i]]));
+}
+
+// "YYYY-MM-DD" a partir de cualquier valor de fecha — una celda de Google
+// Sheets con pinta de fecha ("2026-09-10") se puede guardar como texto o
+// autoconvertir a un valor de fecha real según el formato de la columna; a
+// diferencia de recortar el string con .slice(0,10), esto da el mismo
+// resultado sin importar cuál de los dos sea.
+function fechaYMD_(valor) {
+  return Utilities.formatDate(new Date(valor), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+// lunes=0 ... domingo=6 — mismo criterio que ya usaba resumenSemana_/
+// inicioSemana_, para que "dia_descanso" en "turnos_asignados" se
+// interprete igual en todos lados.
+function diaSemanaLunes0_(fecha) {
+  return (new Date(fecha).getDay() + 6) % 7;
+}
+
+// Servicios funerarios (aviso o recomendado, ver SHEET_HEADERS) que el
+// dueño ya registró para este empleado dentro de un rango de fechas.
+function serviciosFunerariosDelEmpleadoEntre_(codigoEmpleado, desde, hasta) {
+  const sheet = getSheet('servicios_funerarios');
+  const headers = ensureHeaders_(sheet, 'servicios_funerarios');
+  const rows = sheet.getDataRange().getValues();
+  const fechaCol = headers.indexOf('fecha');
+  const codCol = headers.indexOf('codigoEmpleado');
+  return rows.slice(1)
+    .filter(r => r[fechaCol] && String(r[codCol]) === String(codigoEmpleado))
+    .map(r => filaAObjeto_(headers, r))
+    .filter(s => { const d = new Date(s.fecha); return d >= desde && d < hasta; });
+}
+
+// El monto lo trae la propia fila normalmente, pero si el dueño la deja en
+// blanco (captura rápida: solo tipo/fecha/empleado/referencia) se usa el
+// monto vigente en "config" según el tipo — así un cambio futuro del monto
+// oficial no obliga a editar filas viejas ni a repetirlo en cada una.
+function montoServicioFunerario_(registro) {
+  if (registro.monto !== '' && registro.monto !== undefined && registro.monto !== null && !isNaN(Number(registro.monto))) {
+    return Number(registro.monto);
+  }
+  const tipo = String(registro.tipo || '').trim().toLowerCase();
+  return Number(getBonoConfig_(tipo === 'aviso' ? 'bono_aviso_funerario_monto' : 'bono_servicio_recomendado_monto')) || 0;
+}
+
+// Todas las filas de "turnos_asignados" (quién tiene cada turno, y de qué
+// fecha a qué fecha — "hasta" en blanco significa "sigue vigente"). Se lee
+// completa cada vez porque son pocas filas (2 turnos, más el historial de
+// cuando alguien renuncia); no hace falta indexarla.
+function asignacionesTurno_() {
+  const sheet = getSheet('turnos_asignados');
+  const headers = ensureHeaders_(sheet, 'turnos_asignados');
+  const rows = sheet.getDataRange().getValues();
+  return rows.slice(1)
+    .filter(r => r.some(c => c !== '' && c !== null))
+    .map(r => filaAObjeto_(headers, r));
+}
+
+// Qué asignación (turno + día de descanso) tenía vigente este empleado en
+// una fecha dada — null si ese día no hay ninguna fila que lo cubra (roster
+// no capturado todavía, o la fecha cae fuera de cualquier rango desde/hasta).
+function asignacionVigenteEn_(asignaciones, codigoEmpleado, fecha) {
+  return asignaciones.find(a => {
+    if (String(a.codigoEmpleado) !== String(codigoEmpleado)) return false;
+    const desde = a.desde ? new Date(a.desde) : new Date(0);
+    const hasta = a.hasta ? new Date(a.hasta) : null;
+    return fecha >= desde && (!hasta || fecha <= hasta);
+  });
+}
+
+// Todos los turnos confirmados (de cualquier empleado) en un rango de
+// fechas — usa "fecha" (la del turno) y no "confirmado_en" (cuándo se
+// mandó el acuse), que es lo que se necesita para agrupar por semana/mes
+// del CALENDARIO DE TRABAJO real, no por cuándo el empleado alcanzó a
+// escanear su ticket.
+function legadoTurnosEntre_(desde, hasta) {
+  const sheet = getSheet('legado_turnos');
+  const headers = ensureHeaders_(sheet, 'legado_turnos');
+  const rows = sheet.getDataRange().getValues();
+  const fechaCol = headers.indexOf('fecha');
+  return rows.slice(1)
+    .filter(r => r[fechaCol])
+    .map(r => filaAObjeto_(headers, r))
+    .filter(t => { const d = new Date(t.fecha); return d >= desde && d < hasta; });
 }
 
 // Turnos que el propio empleado ya confirmó en Legado Integral (hoja
@@ -542,16 +765,16 @@ function handleResumenLogin_(codigoEmpleado, nip) {
 // rango de fechas — NO la hoja "cortes" de NovaPOS, que vive en la cuenta
 // de cada negocio cliente y esta hoja de cálculo nunca llega a ver.
 function turnosDelEmpleadoEntre_(codigoEmpleado, desde, hasta) {
-  const rows = getSheet('legado_turnos').getDataRange().getValues();
-  const headers = rows[0] || [];
-  const codCol = indexOfHeader_(headers, 'codigoEmpleado');
-  const fechaCol = indexOfHeader_(headers, 'confirmado_en');
-  const faltCol = indexOfHeader_(headers, 'faltante');
-  if (codCol < 0 || fechaCol < 0) return [];
-  return rows.slice(1)
-    .filter(r => String(r[codCol]) === String(codigoEmpleado) && r[fechaCol])
-    .map(r => ({ fecha: r[fechaCol], faltante: Number(r[faltCol]) || 0 }))
-    .filter(t => { const d = new Date(t.fecha); return d >= desde && d < hasta; });
+  return legadoTurnosEntre_(desde, hasta).filter(t => String(t.codigoEmpleado) === String(codigoEmpleado));
+}
+
+// Lunes de la semana calendario (00:00) a la que pertenece una fecha, como
+// string — se usa para agrupar retardos/incidencias de caja por semana.
+function inicioSemana_(fecha) {
+  const d = new Date(fecha); d.setHours(0,0,0,0);
+  const diaSemana = (d.getDay() + 6) % 7; // lunes=0 ... domingo=6
+  d.setDate(d.getDate() - diaSemana);
+  return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 }
 
 function resumenSemana_(codigoEmpleado) {
@@ -560,7 +783,8 @@ function resumenSemana_(codigoEmpleado) {
   const inicio = new Date(hoy); inicio.setHours(0,0,0,0); inicio.setDate(hoy.getDate() - diaSemana);
   const fin = new Date(inicio); fin.setDate(inicio.getDate() + 7);
 
-  const turnos = turnosDelEmpleadoEntre_(codigoEmpleado, inicio, fin);
+  const turnos = turnosDelEmpleadoEntre_(codigoEmpleado, inicio, fin)
+    .map(t => Object.assign({}, t, { faltante: Number(t.faltante) || 0 }));
   const conFaltante = turnos.filter(t => t.faltante > 0);
 
   const puntos_favor = [];
@@ -577,19 +801,219 @@ function resumenSemana_(codigoEmpleado) {
   };
 }
 
-// Placeholder mientras se definen las reglas de los 4 bonos — ver el
-// comentario en handleResumenLogin_.
-function resumenMes_() {
+// Meta diaria de venta (por turno) del mes indicado — la crea la primera
+// vez que alguien la necesita ese mes (ver resumenMes_) y de ahí en
+// adelante ya no se recalcula sola: el dueño la revisa a mano en la hoja
+// "metas_ventas". Si "aceptada" es TRUE se usa "meta_sugerida" tal cual; si
+// no, se usa lo que capture en "meta_manual" — mientras el dueño no revise
+// ninguna de las dos, se usa la sugerida (para no bloquear el cálculo).
+function asegurarMetaVentas_(mesYYYYMM, turno) {
+  // Dos empleados pueden abrir "Mi progreso" casi al mismo tiempo el primer
+  // día del mes — sin candado, ambos podrían no encontrar la fila todavía y
+  // cada uno insertar la suya, duplicando la meta de ese turno/mes.
+  const lock = LockService.getScriptLock();
+  lock.tryLock(5000);
+  try {
+    const sheet = getSheet('metas_ventas');
+    const headers = ensureHeaders_(sheet, 'metas_ventas');
+    const rows = sheet.getDataRange().getValues();
+    const mesCol = headers.indexOf('mes');
+    const turnoCol = headers.indexOf('turno');
+    const existente = rows.findIndex((r,i) => i>0 && String(r[mesCol]) === mesYYYYMM && String(r[turnoCol]) === turno);
+    if (existente > 0) return filaAObjeto_(headers, rows[existente]);
+
+    const registro = {
+      id: Utilities.getUuid(),
+      mes: mesYYYYMM,
+      turno,
+      meta_sugerida: calcularMetaVentaSugerida_(mesYYYYMM, turno),
+      aceptada: '',
+      meta_manual: '',
+      generado_en: new Date().toISOString(),
+    };
+    sheet.appendRow(headers.map(h => registro[h] ?? ''));
+    return registro;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// meta_sugerida (diaria) = [venta TOTAL real del turno el mes anterior
+// (venta_turno + copias_impresiones_vendido, ver LEGADOINTEGRALQRCIERRECAJA.md)
+// × (1 + % de crecimiento configurado)] ÷ días del MES QUE SE ESTÁ
+// CALCULANDO (no los del mes anterior) — así, si el mes anterior tuvo 30
+// días y este tiene 31 (o al revés, o es febrero), la meta diaria se
+// reparte entre los días que de verdad tiene el mes en curso en vez de
+// arrastrar el promedio diario del mes pasado tal cual. Si no hay ningún
+// turno confirmado el mes anterior (negocio nuevo en Legado Integral, o
+// primer mes de este turno), se usa el monto inicial acordado ($700 día /
+// $400 noche) — ahí no hay ningún total que repartir todavía.
+function calcularMetaVentaSugerida_(mesYYYYMM, turno) {
+  const [anio, mes] = mesYYYYMM.split('-').map(Number);
+  const mesAnterior = new Date(anio, mes - 2, 1); // Date usa meses 0-11; "mes-2" retrocede uno
+  const desde = new Date(mesAnterior.getFullYear(), mesAnterior.getMonth(), 1);
+  const hasta = new Date(mesAnterior.getFullYear(), mesAnterior.getMonth() + 1, 1);
+
+  const turnosMesAnterior = legadoTurnosEntre_(desde, hasta).filter(t => t.turno === turno);
+  if (!turnosMesAnterior.length) {
+    return Number(getBonoConfig_(turno === 'dia' ? 'meta_ventas_dia_inicial' : 'meta_ventas_noche_inicial'));
+  }
+  const totalVentasMesAnterior = turnosMesAnterior.reduce((s,t) => s + (Number(t.venta_turno)||0) + (Number(t.copias_impresiones_vendido)||0), 0);
+  const pct = Number(getBonoConfig_('meta_ventas_crecimiento_pct'));
+  const metaMensualNueva = totalVentasMesAnterior * (1 + pct/100);
+  const diasDelMesEnCurso = new Date(anio, mes, 0).getDate(); // último día de "mes" (1-indexado) = cuántos días tiene
+  return Math.round(metaMensualNueva / diasDelMesEnCurso);
+}
+
+function metaFinalDe_(meta) {
+  const aceptada = meta.aceptada === true || String(meta.aceptada).trim().toUpperCase() === 'TRUE';
+  const manual = meta.meta_manual;
+  const tieneManual = manual !== '' && manual !== undefined && manual !== null && !isNaN(Number(manual));
+  return (!aceptada && tieneManual) ? Number(manual) : Number(meta.meta_sugerida);
+}
+
+// Cálculo real de los 4 bonos del mes en curso para un empleado — ver la
+// tabla de reglas en BONOS_DEFAULTS y el comentario de cada bono abajo.
+function resumenMes_(codigoEmpleado) {
   const hoy = new Date();
+  const anio = hoy.getFullYear(), mesNum = hoy.getMonth() + 1;
+  const mesStr = anio + '-' + ('0'+mesNum).slice(-2);
+  const inicio = new Date(anio, mesNum - 1, 1);
+  const fin = new Date(anio, mesNum, 1);
+
+  const misTurnos = turnosDelEmpleadoEntre_(codigoEmpleado, inicio, fin);
+
+  // ---------- Bono Ventas ----------
+  // Se cumple si, en "bono_ventas_dias_meta" días del mes (por defecto 20),
+  // la venta de TU turno (venta_turno + copias_impresiones_vendido) alcanzó
+  // la meta diaria de ese turno (día u noche) — la meta se recalcula cada
+  // mes (ver asegurarMetaVentas_/calcularMetaVentaSugerida_).
+  const metasPorTurno = {
+    dia: metaFinalDe_(asegurarMetaVentas_(mesStr, 'dia')),
+    noche: metaFinalDe_(asegurarMetaVentas_(mesStr, 'noche')),
+  };
+  const diasMetaRequeridos = Number(getBonoConfig_('bono_ventas_dias_meta'));
+  const diasConMeta = misTurnos.filter(t => {
+    if (!t.turno || metasPorTurno[t.turno] === undefined) return false;
+    const ventaDelTurno = (Number(t.venta_turno)||0) + (Number(t.copias_impresiones_vendido)||0);
+    return ventaDelTurno >= metasPorTurno[t.turno];
+  }).length;
+  const cumpleVentas = diasConMeta >= diasMetaRequeridos;
+
+  // ---------- Bono Puntualidad ----------
+  // "0 retardos en el mes" con tolerancia de 1 retardo (no justificado) por
+  // semana calendario — más de 1 en UNA sola semana lo pierde. Los
+  // retardos marcados "retardo_justificado" a mano por el dueño (excepción
+  // de relevo) no cuentan.
+  const toleranciaRetardosSemana = Number(getBonoConfig_('bono_puntualidad_retardos_max_semana'));
+  const retardosPorSemana = {};
+  misTurnos.forEach(t => {
+    const justificado = t.retardo_justificado === true || String(t.retardo_justificado).trim().toUpperCase() === 'TRUE';
+    const esRetardo = (t.retardo_apertura === true || t.retardo_cierre === true) && !justificado;
+    if (!esRetardo) return;
+    const semana = inicioSemana_(t.fecha);
+    retardosPorSemana[semana] = (retardosPorSemana[semana] || 0) + 1;
+  });
+
+  // Candado de "0 faltas": un día "esperado" es un día del mes (hasta hoy,
+  // nunca días futuros) en que, según "turnos_asignados", a este empleado
+  // le tocaba trabajar y no era su día de descanso. Si ese día no tiene un
+  // turno confirmado en legado_turnos, es una falta — y una sola falta en
+  // el mes hace perder el bono, sin importar los retardos. Si no hay
+  // ninguna asignación capturada para este empleado, no se puede evaluar
+  // (se deja pasar, en vez de inventar una falta que no se puede probar).
+  const misAsignaciones = asignacionesTurno_().filter(a => String(a.codigoEmpleado) === String(codigoEmpleado));
+  const fechasConTurno = new Set(misTurnos.map(t => fechaYMD_(t.fecha)));
+  let faltas = 0;
+  if (misAsignaciones.length) {
+    const finEvaluacion = new Date(anio, mesNum - 1, hoy.getDate() + 1); // nunca evalúa días futuros
+    for (let d = new Date(inicio); d < finEvaluacion; d.setDate(d.getDate() + 1)) {
+      const asignacion = asignacionVigenteEn_(misAsignaciones, codigoEmpleado, d);
+      if (!asignacion) continue; // sin asignación vigente ese día — no se puede saber si le tocaba
+      // "" (dia_descanso todavía no capturado) NO debe leerse como "0"
+      // (lunes) — Number('') es 0 en JS, y eso pondría a todos con el
+      // campo en blanco un día de descanso falso los lunes.
+      const diaDescanso = asignacion.dia_descanso === '' || asignacion.dia_descanso === undefined || asignacion.dia_descanso === null
+        ? null : Number(asignacion.dia_descanso);
+      if (diaDescanso !== null && diaSemanaLunes0_(d) === diaDescanso) continue; // su día de descanso
+      if (!fechasConTurno.has(fechaYMD_(d))) faltas++;
+    }
+  }
+
+  const cumplePuntualidad = faltas === 0 && !Object.values(retardosPorSemana).some(n => n > toleranciaRetardosSemana);
+
+  // ---------- Bono Caja ----------
+  // Tolerancia de $100 de faltante (no sobrante) en TODO el mes, y no más
+  // de 1 turno con faltante o sobrante por semana.
+  const tolCajaMensual = Number(getBonoConfig_('bono_caja_tolerancia_mensual'));
+  const maxIncidenciasSemana = Number(getBonoConfig_('bono_caja_max_incidencias_semana'));
+  const totalFaltanteMes = misTurnos.reduce((s,t) => s + Math.max(0, Number(t.faltante)||0), 0);
+  const incidenciasPorSemana = {};
+  misTurnos.forEach(t => {
+    if ((Number(t.faltante)||0) !== 0) {
+      const semana = inicioSemana_(t.fecha);
+      incidenciasPorSemana[semana] = (incidenciasPorSemana[semana]||0) + 1;
+    }
+  });
+  const cumpleCaja = totalFaltanteMes <= tolCajaMensual && !Object.values(incidenciasPorSemana).some(n => n > maxIncidenciasSemana);
+
+  // ---------- Bono Inventario ----------
+  // Se mide combinando AMBOS turnos del día (día + noche): los 2 hacen su
+  // propio conteo de inventario al entrar, así que no se puede saber a
+  // cuál de los dos le falta algo — por eso se suma la merma de los 2
+  // turnos de cada fecha. ⚠️ Todavía falta acordar cuánta merma combinada
+  // se tolera al mes ("bono_inventario_tolerancia_mensual" en "config") —
+  // sin ese número no se puede decidir si se gana o no, así que el bono se
+  // queda en $0 aunque aquí ya se calcula y expone el total real del mes.
+  const mermaPorDia = {};
+  legadoTurnosEntre_(inicio, fin).forEach(t => {
+    const clave = fechaYMD_(t.fecha);
+    mermaPorDia[clave] = (mermaPorDia[clave] || 0) + (Number(t.merma)||0);
+  });
+  const mermaTotalMes = Object.values(mermaPorDia).reduce((s,n) => s+n, 0);
+  const tolInventarioMensual = getBonoConfig_('bono_inventario_tolerancia_mensual');
+  const tolInventarioDefinida = tolInventarioMensual !== undefined && tolInventarioMensual !== '';
+  const cumpleInventario = tolInventarioDefinida && mermaTotalMes <= Number(tolInventarioMensual);
+
+  // ---------- Bonos por referido funerario ----------
+  // Independientes de los 4 de arriba: no cuentan para "elegible_premio_
+  // maximo" (ese sigue siendo solo Ventas+Puntualidad+Caja+Inventario) y no
+  // tienen tope — se suman todos los que el dueño haya registrado este mes
+  // en "servicios_funerarios" para este empleado.
+  const serviciosDelMes = serviciosFunerariosDelEmpleadoEntre_(codigoEmpleado, inicio, fin);
+  const tipoDe_ = s => String(s.tipo || '').trim().toLowerCase();
+  const avisosDelMes = serviciosDelMes.filter(s => tipoDe_(s) === 'aviso');
+  const recomendadosDelMes = serviciosDelMes.filter(s => tipoDe_(s) === 'recomendado');
+  const bono_avisos_funerarios = avisosDelMes.reduce((s,r) => s + montoServicioFunerario_(r), 0);
+  const bono_servicios_recomendados = recomendadosDelMes.reduce((s,r) => s + montoServicioFunerario_(r), 0);
+
+  const bono_ventas = cumpleVentas ? Number(getBonoConfig_('bono_ventas_monto')) : 0;
+  const bono_puntualidad = cumplePuntualidad ? Number(getBonoConfig_('bono_puntualidad_monto')) : 0;
+  const bono_caja = cumpleCaja ? Number(getBonoConfig_('bono_caja_monto')) : 0;
+  const bono_inventario = cumpleInventario ? Number(getBonoConfig_('bono_inventario_monto')) : 0;
+  const elegible_premio_maximo = cumpleVentas && cumplePuntualidad && cumpleCaja && cumpleInventario;
+
+  const pendientes = [];
+  if (!tolInventarioDefinida) pendientes.push('Bono Inventario: falta definir cuánta merma combinada (de los 2 turnos) se tolera al mes.');
+  if (!misAsignaciones.length) pendientes.push('Bono Puntualidad: agrega tu turno y tu día de descanso en la hoja "turnos_asignados" para que se pueda revisar el candado de "0 faltas".');
+
   return {
     mes: hoy.toLocaleDateString('es-MX', { month: 'long' }),
-    elegible_premio_maximo: false,
-    mensaje: 'El cálculo de bonos del mes está pendiente de configurar — próximamente verás aquí tu progreso real.',
-    bono_ventas: 0,
-    bono_puntualidad: 0,
-    bono_caja: 0,
-    bono_inventario: 0,
-    total_bonos: 0,
+    elegible_premio_maximo,
+    mensaje: pendientes.join(' '),
+    bono_ventas,
+    bono_puntualidad,
+    bono_caja,
+    bono_inventario,
+    bono_avisos_funerarios,
+    bono_servicios_recomendados,
+    avisos_funerarios_count: avisosDelMes.length,
+    servicios_recomendados_count: recomendadosDelMes.length,
+    total_bonos: bono_ventas + bono_puntualidad + bono_caja + bono_inventario + bono_avisos_funerarios + bono_servicios_recomendados,
+    dias_falta: faltas,
+    dias_con_meta: diasConMeta,
+    dias_meta_requeridos: diasMetaRequeridos,
+    merma_total_mes: Math.round(mermaTotalMes * 100) / 100,
   };
 }
 
@@ -736,7 +1160,68 @@ const SHEET_HEADERS = {
   // duplica los datos de "cortes", solo agrega lo que el empleado confirma
   // desde esta app — sobre todo monto_entregado_admin, que NovaPOS deja en
   // blanco a propósito porque ese paso es manual.
-  legado_turnos: ['id','folio','codigoEmpleado','nombreEmpleado','fecha','hora_apertura','hora_cierre','venta_turno','recargas_telefonicas','comision_recargas','copias_impresiones_vendidas','monto_entregado_admin','inventario_vendido','faltante','merma','confirmado_en'],
+  //
+  // Columnas y nombres tal cual el contrato real del QR/confirmar_turno
+  // (ver LEGADOINTEGRALQRCIERRECAJA.md, secciones 3 y 5.2) — no hay un campo
+  // "comision_recargas" separado (venta_turno ya la incluye) y el nombre es
+  // "copias_impresiones_vendido" (singular). copias_bn_usadas/
+  // copias_color_usadas/impresiones_bn_usadas/impresiones_color_usadas son
+  // lecturas del medidor físico (unidades), no dinero.
+  //
+  // turno/retardo_apertura/retardo_cierre: los calcula handleConfirmarTurno_
+  // (ver detectarTurno_/minutosDeRetraso_) a partir de hora_apertura/
+  // hora_cierre — no los manda la app. motivo_retardo lo captura el
+  // empleado en Legado Integral cuando hay retraso. retardo_justificado lo
+  // marca el DUEÑO a mano en esta hoja (checkbox TRUE/FALSE) para las
+  // excepciones de relevo — nunca lo pisa una reconfirmación del mismo
+  // folio (ver handleConfirmarTurno_). Junto con faltante, merma y
+  // venta_turno son la materia prima que usa resumenMes_ para calcular los
+  // 4 bonos (ver también la hoja "metas_ventas" más abajo).
+  legado_turnos: ['id','folio','codigoEmpleado','nombreEmpleado','fecha','hora_apertura','hora_cierre','venta_turno','recargas_telefonicas','monto_entregado_admin','inventario_vendido','faltante','merma','copias_bn_usadas','copias_color_usadas','impresiones_bn_usadas','impresiones_color_usadas','copias_impresiones_vendido','turno','retardo_apertura','retardo_cierre','motivo_retardo','retardo_justificado','confirmado_en'],
+  // Meta diaria de venta por turno (día/noche) y mes — la genera sola
+  // asegurarMetaVentas_ la primera vez que se necesita ese mes (meta_sugerida
+  // = venta TOTAL real del turno el mes anterior × (1 + % de crecimiento de
+  // "config"), repartida entre los días que tiene el mes que se está
+  // calculando — no los del mes anterior, para que un mes más corto o más
+  // largo que el anterior no herede el mismo promedio diario sin ajustar; o
+  // el monto inicial acordado si no hay mes anterior). El DUEÑO la revisa
+  // aquí a mano: "aceptada" = TRUE usa meta_sugerida tal cual; si no, se usa
+  // lo que capture en "meta_manual".
+  // Ver metaFinalDe_/resumenMes_ en el código.
+  metas_ventas: ['id','mes','turno','meta_sugerida','aceptada','meta_manual','generado_en'],
+  // Quién tiene asignado cada uno de los 2 turnos (día/noche) y su día de
+  // descanso — el DUEÑO la captura y mantiene a mano. Siempre son las
+  // mismas 2 personas salvo que alguien renuncie: en ese caso, en vez de
+  // editar la fila existente, ciérrala poniéndole "hasta" (el último día
+  // que trabajó) y agrega una fila nueva para quien la sustituye con su
+  // propio "desde" — así el historial de meses anteriores no cambia.
+  // "hasta" en blanco = sigue vigente. "dia_descanso" es un número
+  // lunes=0 ... domingo=6 (ej. domingo=6). Ejemplo: el empleado del turno
+  // noche descansa los domingos — su turno empieza domingo a las 20:00 y
+  // termina lunes a las 8:00, así que ese domingo simplemente no habrá
+  // ningún turno confirmado con fecha domingo, y no debe contar como falta.
+  // Se usa para: (1) detectar el turno de cada confirmación con más
+  // confianza que el criterio por hora (ver handleConfirmarTurno_), y (2)
+  // el candado de "0 faltas" del Bono Puntualidad (ver resumenMes_): un día
+  // que le tocaba trabajar (no es su dia_descanso) y no tiene turno
+  // confirmado en legado_turnos cuenta como falta.
+  turnos_asignados: ['id','turno','codigoEmpleado','dia_descanso','desde','hasta'],
+  // Bonos por referido funerario — el DUEÑO la captura a mano, no hay forma
+  // de verificarlos desde la app (dependen de que Funerales Huerta confirme
+  // el servicio, o de que el cliente llegue sin que el asesor haya hecho
+  // ninguna labor de venta). "tipo": "aviso" ($200, Bono Aviso de Servicio
+  // Funerario — cada servicio efectivo de Funerales Huerta que dio aviso
+  // por referencia de este empleado) o "recomendado" ($700, Bono Servicio
+  // Directo Recomendado — el cliente llegó directo con la referencia del
+  // empleado, sin labor de venta del asesor). "referencia" es texto libre
+  // (nombre del finado/cliente o folio de Funerales Huerta) para poder
+  // auditar y no duplicar el mismo servicio dos veces. "monto" puede
+  // dejarse en blanco para usar el monto vigente en "config"
+  // (bono_aviso_funerario_monto/bono_servicio_recomendado_monto) — ver
+  // montoServicioFunerario_/resumenMes_. Son bonos independientes de los 4
+  // operativos de arriba: se suman al total del mes pero no cuentan para
+  // "elegible_premio_maximo".
+  servicios_funerarios: ['id','tipo','codigoEmpleado','nombreEmpleado','fecha','referencia','monto','capturado_en'],
 };
 
 function getSheet(name) {
