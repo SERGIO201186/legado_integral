@@ -295,12 +295,33 @@ function handleConfirmarTurno_(body) {
     return json({ok:false, error:'NIP incorrecto'});
   }
 
+  // El turno (día/noche) no lo manda el QR de NovaPOS — se deduce de la
+  // hora de apertura (ver detectarTurno_/BONOS_DEFAULTS). El bono de
+  // Puntualidad solo se checa en los 2 extremos del día que sí tienen
+  // horario oficial acordado: la apertura del turno día (8:00) y el cierre
+  // del turno noche (20:00) — el relevo de en medio todavía no tiene una
+  // hora fija acordada.
+  const turno = detectarTurno_(body.hora_apertura);
+  const tolerancia = Number(getBonoConfig_('bono_puntualidad_tolerancia_min'));
+  const retardoApertura = turno === 'dia'
+    && minutosDeRetraso_(body.hora_apertura, getBonoConfig_('bono_puntualidad_apertura_hhmm')) > tolerancia;
+  const retardoCierre = turno === 'noche'
+    && minutosDeRetraso_(body.hora_cierre, getBonoConfig_('bono_puntualidad_cierre_hhmm')) > tolerancia;
+  if ((retardoApertura || retardoCierre) && !String(body.motivo_retardo || '').trim()) {
+    return json({ok:false, error:'Faltó indicar el motivo del retraso.'});
+  }
+
   const sheet = getSheet('legado_turnos');
   const headers = ensureHeaders_(sheet, 'legado_turnos');
   const rows = sheet.getDataRange().getValues();
   const folioCol = headers.indexOf('folio');
   const idCol = headers.indexOf('id');
   const existing = rows.findIndex((r,i) => i>0 && r[folioCol] === body.folio);
+  // "retardo_justificado" lo marca el dueño a mano en la hoja (excepción de
+  // relevo, ver LEGADOINTEGRALQRCIERRECAJA.md) — si el empleado vuelve a
+  // escanear/reenviar el mismo folio, no se debe perder ese juicio manual.
+  const justificadoCol = headers.indexOf('retardo_justificado');
+  const retardoJustificadoPrevio = (existing > 0 && justificadoCol >= 0) ? rows[existing][justificadoCol] : '';
 
   const registro = {
     id: existing > 0 ? rows[existing][idCol] : Utilities.getUuid(),
@@ -310,6 +331,11 @@ function handleConfirmarTurno_(body) {
     fecha: body.fecha || '',
     hora_apertura: body.hora_apertura || '',
     hora_cierre: body.hora_cierre || '',
+    turno,
+    retardo_apertura: retardoApertura,
+    retardo_cierre: retardoCierre,
+    motivo_retardo: body.motivo_retardo || '',
+    retardo_justificado: retardoJustificadoPrevio,
     // venta_turno ya viene de NovaPOS con la comisión de recargas incluida
     // (ventasTotal + recargasComisionTotal, ver LEGADOINTEGRALQRCIERRECAJA.md
     // sección 3) — no existe un campo "comision_recargas" separado en el
@@ -542,11 +568,8 @@ function debugEmpleadosLogin() {
 
 // Valida el NIP contra el directorio de empleados propio de Legado Integral
 // (columna "NIP de Acceso a Apps de la Empresa" en Directorio_Alta_Empleados,
-// ver getEmpleadosLogin_ arriba) y regresa su progreso. Los 4 bonos quedan
-// en $0 por ahora: sus reglas (meta de venta, tolerancia de retardo,
-// montos) todavía no están definidas en ningún lado — mostrar un número
-// inventado aquí pagaría bonos con un criterio que nadie acordó. Cuando se
-// definan las reglas, calcularlas aquí dentro de resumenMes_.
+// ver getEmpleadosLogin_ arriba) y regresa su progreso, incluyendo el
+// cálculo real de los 4 bonos (ver resumenMes_ más abajo).
 function handleResumenLogin_(codigoEmpleado, nip) {
   if (!codigoEmpleado || !nip) return json({ok:false, error:'Falta empleado o NIP'});
   const empleado = getEmpleadosLogin_().find(e => String(e.id) === String(codigoEmpleado));
@@ -559,8 +582,99 @@ function handleResumenLogin_(codigoEmpleado, nip) {
     ok: true,
     empleado: { id: empleado.id, nombre: empleado.nombre },
     semana: resumenSemana_(codigoEmpleado),
-    mes: resumenMes_(),
+    mes: resumenMes_(codigoEmpleado),
   });
+}
+
+// -------------------------------------------------------------------------
+// Configuración de los 4 bonos — todo editable sin tocar código: agrega o
+// edita la fila correspondiente en la hoja "config" (columnas "key","value")
+// para cambiar cualquiera de estos valores. Si la fila no existe todavía se
+// usa el valor por defecto de BONOS_DEFAULTS. Reglas acordadas el
+// 2026-09-10; ver conversación/PR para el detalle de cada una.
+// -------------------------------------------------------------------------
+const BONOS_DEFAULTS = {
+  // Hora (0-23) que separa el turno "dia" del turno "noche" según la hora
+  // de apertura del corte — el relevo real ocurre a mitad del día, entre el
+  // fin del turno día (8:00) y el cierre del turno noche (20:00), y no hay
+  // una hora fija acordada para ese relevo todavía.
+  turno_corte_hora: 14,
+  // Meta diaria de venta (venta_turno + copias_impresiones_vendido) del
+  // PRIMER mes del que hay historial, por turno — de ahí en adelante la
+  // meta se recalcula sola en metas_ventas (ver asegurarMetaVentas_).
+  meta_ventas_dia_inicial: 700,
+  meta_ventas_noche_inicial: 400,
+  // % de crecimiento que se le suma al promedio diario real del mes
+  // anterior para sugerir la meta del mes actual. ⚠️ Número de arranque —
+  // AJÚSTALO en la hoja "config" (key "meta_ventas_crecimiento_pct") al
+  // porcentaje que el negocio realmente quiera exigir mes a mes.
+  meta_ventas_crecimiento_pct: 5,
+  // Días del mes en que hay que alcanzar la meta diaria de tu turno.
+  bono_ventas_dias_meta: 20,
+  bono_ventas_monto: 600,
+  bono_puntualidad_apertura_hhmm: '08:00',
+  bono_puntualidad_cierre_hhmm: '20:00',
+  bono_puntualidad_tolerancia_min: 15,
+  // Retardos (no justificados) tolerados por semana antes de perder el
+  // bono — no es "cuántos se permiten en total", es "más de esto en UNA
+  // sola semana ya lo pierde".
+  bono_puntualidad_retardos_max_semana: 1,
+  bono_puntualidad_monto: 400,
+  // Suma de faltantes (no sobrantes) tolerada en TODO el mes.
+  bono_caja_tolerancia_mensual: 100,
+  // Turnos con faltante O sobrante (cualquiera de los dos) tolerados por
+  // semana — más de esto en una semana lo pierde aunque el mes siga dentro
+  // de la tolerancia de $100.
+  bono_caja_max_incidencias_semana: 1,
+  bono_caja_monto: 250,
+  bono_inventario_monto: 250,
+  // ⚠️ "bono_inventario_tolerancia_mensual" TODAVÍA NO EXISTE aquí a
+  // propósito: falta acordar cuánta merma combinada de los 2 turnos (ver
+  // resumenMes_) se tolera al mes. Sin ese número no se puede decidir si se
+  // gana el bono o no — se calcula el total real para que el dueño lo vea,
+  // pero el bono se queda en $0 hasta que se capture ese valor en "config".
+};
+
+function getBonoConfig_(key) {
+  const valor = getConfigMap_()[key];
+  return (valor === undefined || valor === '') ? BONOS_DEFAULTS[key] : valor;
+}
+
+// Ticket sin hora de apertura (viejo, o captura manual incompleta) regresa
+// '' — no se puede clasificar ni evaluar puntualidad para ese turno.
+function detectarTurno_(horaApertura) {
+  const hora = parseInt(String(horaApertura || '').split(':')[0], 10);
+  if (isNaN(hora)) return '';
+  return hora < Number(getBonoConfig_('turno_corte_hora')) ? 'dia' : 'noche';
+}
+
+// Minutos de diferencia entre una hora real "HH:MM" y una esperada
+// "HH:MM" — positivo cuando la real es DESPUÉS de la esperada (retraso).
+function minutosDeRetraso_(horaReal, horaEsperada) {
+  const r = String(horaReal || '').split(':').map(Number);
+  const e = String(horaEsperada || '').split(':').map(Number);
+  if (r.length < 2 || e.length < 2 || r.some(isNaN) || e.some(isNaN)) return 0;
+  return (r[0]*60 + r[1]) - (e[0]*60 + e[1]);
+}
+
+function filaAObjeto_(headers, row) {
+  return Object.fromEntries(headers.map((h,i) => [h, row[i]]));
+}
+
+// Todos los turnos confirmados (de cualquier empleado) en un rango de
+// fechas — usa "fecha" (la del turno) y no "confirmado_en" (cuándo se
+// mandó el acuse), que es lo que se necesita para agrupar por semana/mes
+// del CALENDARIO DE TRABAJO real, no por cuándo el empleado alcanzó a
+// escanear su ticket.
+function legadoTurnosEntre_(desde, hasta) {
+  const sheet = getSheet('legado_turnos');
+  const headers = ensureHeaders_(sheet, 'legado_turnos');
+  const rows = sheet.getDataRange().getValues();
+  const fechaCol = headers.indexOf('fecha');
+  return rows.slice(1)
+    .filter(r => r[fechaCol])
+    .map(r => filaAObjeto_(headers, r))
+    .filter(t => { const d = new Date(t.fecha); return d >= desde && d < hasta; });
 }
 
 // Turnos que el propio empleado ya confirmó en Legado Integral (hoja
@@ -568,16 +682,16 @@ function handleResumenLogin_(codigoEmpleado, nip) {
 // rango de fechas — NO la hoja "cortes" de NovaPOS, que vive en la cuenta
 // de cada negocio cliente y esta hoja de cálculo nunca llega a ver.
 function turnosDelEmpleadoEntre_(codigoEmpleado, desde, hasta) {
-  const rows = getSheet('legado_turnos').getDataRange().getValues();
-  const headers = rows[0] || [];
-  const codCol = indexOfHeader_(headers, 'codigoEmpleado');
-  const fechaCol = indexOfHeader_(headers, 'confirmado_en');
-  const faltCol = indexOfHeader_(headers, 'faltante');
-  if (codCol < 0 || fechaCol < 0) return [];
-  return rows.slice(1)
-    .filter(r => String(r[codCol]) === String(codigoEmpleado) && r[fechaCol])
-    .map(r => ({ fecha: r[fechaCol], faltante: Number(r[faltCol]) || 0 }))
-    .filter(t => { const d = new Date(t.fecha); return d >= desde && d < hasta; });
+  return legadoTurnosEntre_(desde, hasta).filter(t => String(t.codigoEmpleado) === String(codigoEmpleado));
+}
+
+// Lunes de la semana calendario (00:00) a la que pertenece una fecha, como
+// string — se usa para agrupar retardos/incidencias de caja por semana.
+function inicioSemana_(fecha) {
+  const d = new Date(fecha); d.setHours(0,0,0,0);
+  const diaSemana = (d.getDay() + 6) % 7; // lunes=0 ... domingo=6
+  d.setDate(d.getDate() - diaSemana);
+  return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
 }
 
 function resumenSemana_(codigoEmpleado) {
@@ -586,7 +700,8 @@ function resumenSemana_(codigoEmpleado) {
   const inicio = new Date(hoy); inicio.setHours(0,0,0,0); inicio.setDate(hoy.getDate() - diaSemana);
   const fin = new Date(inicio); fin.setDate(inicio.getDate() + 7);
 
-  const turnos = turnosDelEmpleadoEntre_(codigoEmpleado, inicio, fin);
+  const turnos = turnosDelEmpleadoEntre_(codigoEmpleado, inicio, fin)
+    .map(t => Object.assign({}, t, { faltante: Number(t.faltante) || 0 }));
   const conFaltante = turnos.filter(t => t.faltante > 0);
 
   const puntos_favor = [];
@@ -603,19 +718,173 @@ function resumenSemana_(codigoEmpleado) {
   };
 }
 
-// Placeholder mientras se definen las reglas de los 4 bonos — ver el
-// comentario en handleResumenLogin_.
-function resumenMes_() {
+// Meta diaria de venta (por turno) del mes indicado — la crea la primera
+// vez que alguien la necesita ese mes (ver resumenMes_) y de ahí en
+// adelante ya no se recalcula sola: el dueño la revisa a mano en la hoja
+// "metas_ventas". Si "aceptada" es TRUE se usa "meta_sugerida" tal cual; si
+// no, se usa lo que capture en "meta_manual" — mientras el dueño no revise
+// ninguna de las dos, se usa la sugerida (para no bloquear el cálculo).
+function asegurarMetaVentas_(mesYYYYMM, turno) {
+  // Dos empleados pueden abrir "Mi progreso" casi al mismo tiempo el primer
+  // día del mes — sin candado, ambos podrían no encontrar la fila todavía y
+  // cada uno insertar la suya, duplicando la meta de ese turno/mes.
+  const lock = LockService.getScriptLock();
+  lock.tryLock(5000);
+  try {
+    const sheet = getSheet('metas_ventas');
+    const headers = ensureHeaders_(sheet, 'metas_ventas');
+    const rows = sheet.getDataRange().getValues();
+    const mesCol = headers.indexOf('mes');
+    const turnoCol = headers.indexOf('turno');
+    const existente = rows.findIndex((r,i) => i>0 && String(r[mesCol]) === mesYYYYMM && String(r[turnoCol]) === turno);
+    if (existente > 0) return filaAObjeto_(headers, rows[existente]);
+
+    const registro = {
+      id: Utilities.getUuid(),
+      mes: mesYYYYMM,
+      turno,
+      meta_sugerida: calcularMetaVentaSugerida_(mesYYYYMM, turno),
+      aceptada: '',
+      meta_manual: '',
+      generado_en: new Date().toISOString(),
+    };
+    sheet.appendRow(headers.map(h => registro[h] ?? ''));
+    return registro;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// meta_sugerida = promedio diario real de venta del turno el mes anterior
+// (venta_turno + copias_impresiones_vendido, ver LEGADOINTEGRALQRCIERRECAJA.md)
+// más el % de crecimiento configurado. Si no hay ningún turno confirmado el
+// mes anterior (negocio nuevo en Legado Integral, o primer mes de este
+// turno), se usa el monto inicial acordado ($700 día / $400 noche).
+function calcularMetaVentaSugerida_(mesYYYYMM, turno) {
+  const [anio, mes] = mesYYYYMM.split('-').map(Number);
+  const mesAnterior = new Date(anio, mes - 2, 1); // Date usa meses 0-11; "mes-2" retrocede uno
+  const desde = new Date(mesAnterior.getFullYear(), mesAnterior.getMonth(), 1);
+  const hasta = new Date(mesAnterior.getFullYear(), mesAnterior.getMonth() + 1, 1);
+
+  const turnosMesAnterior = legadoTurnosEntre_(desde, hasta).filter(t => t.turno === turno);
+  if (!turnosMesAnterior.length) {
+    return Number(getBonoConfig_(turno === 'dia' ? 'meta_ventas_dia_inicial' : 'meta_ventas_noche_inicial'));
+  }
+  const totalVentas = turnosMesAnterior.reduce((s,t) => s + (Number(t.venta_turno)||0) + (Number(t.copias_impresiones_vendido)||0), 0);
+  const promedioDiario = totalVentas / turnosMesAnterior.length;
+  const pct = Number(getBonoConfig_('meta_ventas_crecimiento_pct'));
+  return Math.round(promedioDiario * (1 + pct/100));
+}
+
+function metaFinalDe_(meta) {
+  const aceptada = meta.aceptada === true || String(meta.aceptada).trim().toUpperCase() === 'TRUE';
+  const manual = meta.meta_manual;
+  const tieneManual = manual !== '' && manual !== undefined && manual !== null && !isNaN(Number(manual));
+  return (!aceptada && tieneManual) ? Number(manual) : Number(meta.meta_sugerida);
+}
+
+// Cálculo real de los 4 bonos del mes en curso para un empleado — ver la
+// tabla de reglas en BONOS_DEFAULTS y el comentario de cada bono abajo.
+function resumenMes_(codigoEmpleado) {
   const hoy = new Date();
+  const anio = hoy.getFullYear(), mesNum = hoy.getMonth() + 1;
+  const mesStr = anio + '-' + ('0'+mesNum).slice(-2);
+  const inicio = new Date(anio, mesNum - 1, 1);
+  const fin = new Date(anio, mesNum, 1);
+
+  const misTurnos = turnosDelEmpleadoEntre_(codigoEmpleado, inicio, fin);
+
+  // ---------- Bono Ventas ----------
+  // Se cumple si, en "bono_ventas_dias_meta" días del mes (por defecto 20),
+  // la venta de TU turno (venta_turno + copias_impresiones_vendido) alcanzó
+  // la meta diaria de ese turno (día u noche) — la meta se recalcula cada
+  // mes (ver asegurarMetaVentas_/calcularMetaVentaSugerida_).
+  const metasPorTurno = {
+    dia: metaFinalDe_(asegurarMetaVentas_(mesStr, 'dia')),
+    noche: metaFinalDe_(asegurarMetaVentas_(mesStr, 'noche')),
+  };
+  const diasMetaRequeridos = Number(getBonoConfig_('bono_ventas_dias_meta'));
+  const diasConMeta = misTurnos.filter(t => {
+    if (!t.turno || metasPorTurno[t.turno] === undefined) return false;
+    const ventaDelTurno = (Number(t.venta_turno)||0) + (Number(t.copias_impresiones_vendido)||0);
+    return ventaDelTurno >= metasPorTurno[t.turno];
+  }).length;
+  const cumpleVentas = diasConMeta >= diasMetaRequeridos;
+
+  // ---------- Bono Puntualidad ----------
+  // "0 retardos en el mes" con tolerancia de 1 retardo (no justificado) por
+  // semana calendario — más de 1 en UNA sola semana lo pierde. Los
+  // retardos marcados "retardo_justificado" a mano por el dueño (excepción
+  // de relevo) no cuentan.
+  // ⚠️ Candado adicional acordado: además de esto, "0 faltas" (inasistencias)
+  // en el mes — hoy no existe ningún horario/roster de a quién le toca
+  // trabajar qué día, así que no se puede distinguir "faltó" de "no le
+  // tocaba" con los datos que hay. Falta esa fuente de datos para aplicar
+  // este candado; por ahora el bono solo evalúa la parte de retardos.
+  const toleranciaRetardosSemana = Number(getBonoConfig_('bono_puntualidad_retardos_max_semana'));
+  const retardosPorSemana = {};
+  misTurnos.forEach(t => {
+    const justificado = t.retardo_justificado === true || String(t.retardo_justificado).trim().toUpperCase() === 'TRUE';
+    const esRetardo = (t.retardo_apertura === true || t.retardo_cierre === true) && !justificado;
+    if (!esRetardo) return;
+    const semana = inicioSemana_(t.fecha);
+    retardosPorSemana[semana] = (retardosPorSemana[semana] || 0) + 1;
+  });
+  const cumplePuntualidad = !Object.values(retardosPorSemana).some(n => n > toleranciaRetardosSemana);
+
+  // ---------- Bono Caja ----------
+  // Tolerancia de $100 de faltante (no sobrante) en TODO el mes, y no más
+  // de 1 turno con faltante o sobrante por semana.
+  const tolCajaMensual = Number(getBonoConfig_('bono_caja_tolerancia_mensual'));
+  const maxIncidenciasSemana = Number(getBonoConfig_('bono_caja_max_incidencias_semana'));
+  const totalFaltanteMes = misTurnos.reduce((s,t) => s + Math.max(0, Number(t.faltante)||0), 0);
+  const incidenciasPorSemana = {};
+  misTurnos.forEach(t => {
+    if ((Number(t.faltante)||0) !== 0) {
+      const semana = inicioSemana_(t.fecha);
+      incidenciasPorSemana[semana] = (incidenciasPorSemana[semana]||0) + 1;
+    }
+  });
+  const cumpleCaja = totalFaltanteMes <= tolCajaMensual && !Object.values(incidenciasPorSemana).some(n => n > maxIncidenciasSemana);
+
+  // ---------- Bono Inventario ----------
+  // Se mide combinando AMBOS turnos del día (día + noche): los 2 hacen su
+  // propio conteo de inventario al entrar, así que no se puede saber a
+  // cuál de los dos le falta algo — por eso se suma la merma de los 2
+  // turnos de cada fecha. ⚠️ Todavía falta acordar cuánta merma combinada
+  // se tolera al mes ("bono_inventario_tolerancia_mensual" en "config") —
+  // sin ese número no se puede decidir si se gana o no, así que el bono se
+  // queda en $0 aunque aquí ya se calcula y expone el total real del mes.
+  const mermaPorDia = {};
+  legadoTurnosEntre_(inicio, fin).forEach(t => {
+    mermaPorDia[t.fecha] = (mermaPorDia[t.fecha] || 0) + (Number(t.merma)||0);
+  });
+  const mermaTotalMes = Object.values(mermaPorDia).reduce((s,n) => s+n, 0);
+  const tolInventarioMensual = getBonoConfig_('bono_inventario_tolerancia_mensual');
+  const tolInventarioDefinida = tolInventarioMensual !== undefined && tolInventarioMensual !== '';
+  const cumpleInventario = tolInventarioDefinida && mermaTotalMes <= Number(tolInventarioMensual);
+
+  const bono_ventas = cumpleVentas ? Number(getBonoConfig_('bono_ventas_monto')) : 0;
+  const bono_puntualidad = cumplePuntualidad ? Number(getBonoConfig_('bono_puntualidad_monto')) : 0;
+  const bono_caja = cumpleCaja ? Number(getBonoConfig_('bono_caja_monto')) : 0;
+  const bono_inventario = cumpleInventario ? Number(getBonoConfig_('bono_inventario_monto')) : 0;
+  const elegible_premio_maximo = cumpleVentas && cumplePuntualidad && cumpleCaja && cumpleInventario;
+
+  const pendientes = [];
+  if (!tolInventarioDefinida) pendientes.push('Bono Inventario: falta definir cuánta merma combinada (de los 2 turnos) se tolera al mes.');
+
   return {
     mes: hoy.toLocaleDateString('es-MX', { month: 'long' }),
-    elegible_premio_maximo: false,
-    mensaje: 'El cálculo de bonos del mes está pendiente de configurar — próximamente verás aquí tu progreso real.',
-    bono_ventas: 0,
-    bono_puntualidad: 0,
-    bono_caja: 0,
-    bono_inventario: 0,
-    total_bonos: 0,
+    elegible_premio_maximo,
+    mensaje: pendientes.join(' '),
+    bono_ventas,
+    bono_puntualidad,
+    bono_caja,
+    bono_inventario,
+    total_bonos: bono_ventas + bono_puntualidad + bono_caja + bono_inventario,
+    dias_con_meta: diasConMeta,
+    dias_meta_requeridos: diasMetaRequeridos,
+    merma_total_mes: Math.round(mermaTotalMes * 100) / 100,
   };
 }
 
@@ -768,11 +1037,26 @@ const SHEET_HEADERS = {
   // "comision_recargas" separado (venta_turno ya la incluye) y el nombre es
   // "copias_impresiones_vendido" (singular). copias_bn_usadas/
   // copias_color_usadas/impresiones_bn_usadas/impresiones_color_usadas son
-  // lecturas del medidor físico (unidades), no dinero — junto con faltante,
-  // merma y venta_turno son la materia prima para calcular los bonos de
-  // Ventas/Caja/Inventario una vez que se definan sus reglas (ver
-  // resumenMes_ más abajo).
-  legado_turnos: ['id','folio','codigoEmpleado','nombreEmpleado','fecha','hora_apertura','hora_cierre','venta_turno','recargas_telefonicas','monto_entregado_admin','inventario_vendido','faltante','merma','copias_bn_usadas','copias_color_usadas','impresiones_bn_usadas','impresiones_color_usadas','copias_impresiones_vendido','confirmado_en'],
+  // lecturas del medidor físico (unidades), no dinero.
+  //
+  // turno/retardo_apertura/retardo_cierre: los calcula handleConfirmarTurno_
+  // (ver detectarTurno_/minutosDeRetraso_) a partir de hora_apertura/
+  // hora_cierre — no los manda la app. motivo_retardo lo captura el
+  // empleado en Legado Integral cuando hay retraso. retardo_justificado lo
+  // marca el DUEÑO a mano en esta hoja (checkbox TRUE/FALSE) para las
+  // excepciones de relevo — nunca lo pisa una reconfirmación del mismo
+  // folio (ver handleConfirmarTurno_). Junto con faltante, merma y
+  // venta_turno son la materia prima que usa resumenMes_ para calcular los
+  // 4 bonos (ver también la hoja "metas_ventas" más abajo).
+  legado_turnos: ['id','folio','codigoEmpleado','nombreEmpleado','fecha','hora_apertura','hora_cierre','venta_turno','recargas_telefonicas','monto_entregado_admin','inventario_vendido','faltante','merma','copias_bn_usadas','copias_color_usadas','impresiones_bn_usadas','impresiones_color_usadas','copias_impresiones_vendido','turno','retardo_apertura','retardo_cierre','motivo_retardo','retardo_justificado','confirmado_en'],
+  // Meta diaria de venta por turno (día/noche) y mes — la genera sola
+  // asegurarMetaVentas_ la primera vez que se necesita ese mes
+  // (meta_sugerida = promedio diario real del mes anterior + % de
+  // crecimiento de "config", o el monto inicial acordado si no hay mes
+  // anterior). El DUEÑO la revisa aquí a mano: "aceptada" = TRUE usa
+  // meta_sugerida tal cual; si no, se usa lo que capture en "meta_manual".
+  // Ver metaFinalDe_/resumenMes_ en el código.
+  metas_ventas: ['id','mes','turno','meta_sugerida','aceptada','meta_manual','generado_en'],
 };
 
 function getSheet(name) {

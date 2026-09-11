@@ -220,6 +220,10 @@
           <label>Entregado a administración</label>
           <input type="text" inputmode="decimal" id="input-entregado-admin" placeholder="0.00">
         </div>
+        <div class="field" id="campo-motivo-retardo" hidden>
+          <label>Motivo del retraso</label>
+          <input type="text" id="input-motivo-retardo" placeholder="¿Qué pasó?">
+        </div>
         <div id="review-msg" style="margin-top:10px;"></div>
         <div style="display:flex;gap:10px;margin-top:14px;">
           <button class="secondary" id="btn-rescan">Volver a escanear</button>
@@ -489,6 +493,27 @@ function onEscaneoExitoso(texto) {
   mostrarRevision(data);
 }
 
+// Reglas del Bono Puntualidad (acordadas 2026-09-10) — deben coincidir con
+// los valores por defecto de BONOS_DEFAULTS en Codigo_AppsScript_Backend.gs
+// (turno_corte_hora, bono_puntualidad_apertura_hhmm/cierre_hhmm/tolerancia).
+// Si el dueño cambia esos valores en la hoja "config", hay que actualizarlos
+// aquí también — el frontend no tiene forma de leer "config" en vivo, así
+// que esto es solo para mostrar el aviso a tiempo; el backend es quien de
+// verdad decide si cuenta como retardo (ver handleConfirmarTurno_).
+const PUNTUALIDAD = { turnoCorteHora: 14, aperturaEsperada: '08:00', cierreEsperado: '20:00', toleranciaMin: 15 };
+
+function detectarTurnoCliente_(horaApertura) {
+  const hora = parseInt(String(horaApertura || '').split(':')[0], 10);
+  if (isNaN(hora)) return '';
+  return hora < PUNTUALIDAD.turnoCorteHora ? 'dia' : 'noche';
+}
+function minutosDeRetraso_(horaReal, horaEsperada) {
+  const r = String(horaReal || '').split(':').map(Number);
+  const e = String(horaEsperada || '').split(':').map(Number);
+  if (r.length < 2 || e.length < 2 || r.some(isNaN) || e.some(isNaN)) return 0;
+  return (r[0]*60 + r[1]) - (e[0]*60 + e[1]);
+}
+
 function mostrarRevision(data) {
   window.__pendingScan = data;
   // Si el ticket es de otro empleado, no basta con avisar: antes solo se
@@ -497,6 +522,17 @@ function mostrarRevision(data) {
   // ajeno) — eso atribuía mal el turno y ensuciaba las métricas de bonos de
   // ambos empleados. Ahora bloquea el envío de verdad (ver btn-confirm).
   window.__scanMismatch = String(data.id_empleado).trim() !== SESSION.id;
+
+  // Solo se checan los 2 extremos del día con horario oficial acordado: la
+  // apertura del turno día (8:00) y el cierre del turno noche (20:00) — el
+  // relevo de en medio todavía no tiene una hora fija.
+  const turno = detectarTurnoCliente_(data.hora_apertura);
+  const retardoApertura = turno === 'dia' && minutosDeRetraso_(data.hora_apertura, PUNTUALIDAD.aperturaEsperada) > PUNTUALIDAD.toleranciaMin;
+  const retardoCierre = turno === 'noche' && minutosDeRetraso_(data.hora_cierre, PUNTUALIDAD.cierreEsperado) > PUNTUALIDAD.toleranciaMin;
+  window.__scanRetardo = retardoApertura || retardoCierre;
+  $('#campo-motivo-retardo').hidden = !window.__scanRetardo;
+  $('#input-motivo-retardo').value = '';
+
   $('#scan-idle').hidden = true;
   $('#scan-review').hidden = false;
   showMsg('#review-msg', '', '');
@@ -529,6 +565,8 @@ function mostrarRevision(data) {
 
   if (window.__scanMismatch) {
     showMsg('#review-msg', 'Este ticket pertenece a otro número de empleado. No puedes confirmarlo desde tu sesión.', 'err');
+  } else if (window.__scanRetardo) {
+    showMsg('#review-msg', '⚠️ Este turno se abrió tarde o se cerró después de tu horario. Indica el motivo abajo antes de confirmar.', 'warn');
   } else if (data.v !== undefined && data.v !== QR_SCHEMA_VERSION) {
     showMsg('#review-msg', 'Este ticket usa una versión de NovaPOS más reciente; revisa los datos con cuidado antes de enviar.', 'warn');
   }
@@ -667,6 +705,10 @@ $('#btn-confirm').addEventListener('click', async () => {
   if (entregadoAdmin === '' || isNaN(Number(entregadoAdmin))) {
     return showMsg('#review-msg', 'Captura cuánto entregaste a administración.', 'err');
   }
+  const motivoRetardo = $('#input-motivo-retardo').value.trim();
+  if (window.__scanRetardo && !motivoRetardo) {
+    return showMsg('#review-msg', 'Indica el motivo del retraso antes de confirmar.', 'err');
+  }
 
   $('#btn-confirm').disabled = true;
   $('#btn-confirm').textContent = 'Enviando…';
@@ -680,6 +722,7 @@ $('#btn-confirm').addEventListener('click', async () => {
     action: 'confirmar_turno',
     nip: SESSION.nip,
     monto_entregado_admin: Number(entregadoAdmin),
+    motivo_retardo: motivoRetardo,
   });
 
   // Sin try/catch, un fetch que truena (sin conexión, el backend tarda más
@@ -733,7 +776,7 @@ async function cargarProgreso() {
   if (m.elegible_premio_maximo) {
     html += `<div class="banner-gold"><b>¡Excelencia total del mes!</b>Ganaste los 4 bonos — día libre / pago doble.</div>`;
   } else if (m.mensaje) {
-    html += `<div class="msg ok">${m.mensaje}</div>`;
+    html += `<div class="msg warn">${m.mensaje}</div>`;
   }
 
   html += `<div class="card">
@@ -746,10 +789,11 @@ async function cargarProgreso() {
 
   html += `<div class="card">
     <h3 class="section">Bonos de ${m.mes}</h3>
-    <div class="bono"><span class="nombre">Bono Ventas (20+ días de meta)</span><span class="monto ${m.bono_ventas ? 'ganado' : 'no'}">$${m.bono_ventas}</span></div>
-    <div class="bono"><span class="nombre">Bono Puntualidad (0 retardos)</span><span class="monto ${m.bono_puntualidad ? 'ganado' : 'no'}">$${m.bono_puntualidad}</span></div>
+    <div class="bono"><span class="nombre">Días con meta de venta</span><span class="monto ${m.dias_con_meta >= m.dias_meta_requeridos ? 'ganado' : 'no'}">${m.dias_con_meta}/${m.dias_meta_requeridos}</span></div>
+    <div class="bono"><span class="nombre">Bono Ventas</span><span class="monto ${m.bono_ventas ? 'ganado' : 'no'}">$${m.bono_ventas}</span></div>
+    <div class="bono"><span class="nombre">Bono Puntualidad</span><span class="monto ${m.bono_puntualidad ? 'ganado' : 'no'}">$${m.bono_puntualidad}</span></div>
     <div class="bono"><span class="nombre">Bono Caja</span><span class="monto ${m.bono_caja ? 'ganado' : 'no'}">$${m.bono_caja}</span></div>
-    <div class="bono"><span class="nombre">Bono Inventario</span><span class="monto ${m.bono_inventario ? 'ganado' : 'no'}">$${m.bono_inventario}</span></div>
+    <div class="bono"><span class="nombre">Bono Inventario (merma combinada del mes: $${m.merma_total_mes})</span><span class="monto ${m.bono_inventario ? 'ganado' : 'no'}">$${m.bono_inventario}</span></div>
     <div class="bono" style="border-top:1.5px solid #E4DDD1;padding-top:12px;margin-top:4px;"><span class="nombre" style="font-weight:700;">Total del mes</span><span class="monto ganado" style="font-size:16px;">$${m.total_bonos}</span></div>
   </div>`;
 
