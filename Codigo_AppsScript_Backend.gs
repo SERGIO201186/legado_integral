@@ -634,11 +634,12 @@ const BONOS_DEFAULTS = {
   bono_caja_max_incidencias_semana: 1,
   bono_caja_monto: 250,
   bono_inventario_monto: 250,
-  // ⚠️ "bono_inventario_tolerancia_mensual" TODAVÍA NO EXISTE aquí a
-  // propósito: falta acordar cuánta merma combinada de los 2 turnos (ver
-  // resumenMes_) se tolera al mes. Sin ese número no se puede decidir si se
-  // gana el bono o no — se calcula el total real para que el dueño lo vea,
-  // pero el bono se queda en $0 hasta que se capture ese valor en "config".
+  // Suma de merma COMBINADA de los 2 turnos (ver resumenMes_) tolerada en
+  // TODO el mes, en dinero (valor de lo perdido/dañado, no conteo de
+  // piezas) — así da lo mismo perder un producto de $300 que 300 de $1: lo
+  // que importa es el valor total. El conteo por producto se hace aparte,
+  // a mano, solo para saber QUÉ faltó, no para decidir si se gana el bono.
+  bono_inventario_tolerancia_mensual: 300,
 
   // Bonos por referido funerario — independientes de los 4 de arriba (no
   // cuentan para "elegible_premio_maximo"), sin tope: se pagan por cada
@@ -961,10 +962,10 @@ function resumenMes_(codigoEmpleado) {
   // Se mide combinando AMBOS turnos del día (día + noche): los 2 hacen su
   // propio conteo de inventario al entrar, así que no se puede saber a
   // cuál de los dos le falta algo — por eso se suma la merma de los 2
-  // turnos de cada fecha. ⚠️ Todavía falta acordar cuánta merma combinada
-  // se tolera al mes ("bono_inventario_tolerancia_mensual" en "config") —
-  // sin ese número no se puede decidir si se gana o no, así que el bono se
-  // queda en $0 aunque aquí ya se calcula y expone el total real del mes.
+  // turnos de cada fecha. Tolerancia: $300 de merma combinada al mes
+  // ("bono_inventario_tolerancia_mensual" en "config", editable ahí sin
+  // tocar código) — en dinero, no en piezas, así que da lo mismo perder un
+  // producto de $300 que 300 de $1.
   const mermaPorDia = {};
   legadoTurnosEntre_(inicio, fin).forEach(t => {
     const clave = fechaYMD_(t.fecha);
