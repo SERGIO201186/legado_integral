@@ -791,7 +791,7 @@ async function cargarProgreso() {
     <h3 class="section">Bonos de ${m.mes}</h3>
     <div class="bono"><span class="nombre">Días con meta de venta</span><span class="monto ${m.dias_con_meta >= m.dias_meta_requeridos ? 'ganado' : 'no'}">${m.dias_con_meta}/${m.dias_meta_requeridos}</span></div>
     <div class="bono"><span class="nombre">Bono Ventas</span><span class="monto ${m.bono_ventas ? 'ganado' : 'no'}">$${m.bono_ventas}</span></div>
-    <div class="bono"><span class="nombre">Bono Puntualidad</span><span class="monto ${m.bono_puntualidad ? 'ganado' : 'no'}">$${m.bono_puntualidad}</span></div>
+    <div class="bono"><span class="nombre">Bono Puntualidad (faltas del mes: ${m.dias_falta})</span><span class="monto ${m.bono_puntualidad ? 'ganado' : 'no'}">$${m.bono_puntualidad}</span></div>
     <div class="bono"><span class="nombre">Bono Caja</span><span class="monto ${m.bono_caja ? 'ganado' : 'no'}">$${m.bono_caja}</span></div>
     <div class="bono"><span class="nombre">Bono Inventario (merma combinada del mes: $${m.merma_total_mes})</span><span class="monto ${m.bono_inventario ? 'ganado' : 'no'}">$${m.bono_inventario}</span></div>
     <div class="bono" style="border-top:1.5px solid #E4DDD1;padding-top:12px;margin-top:4px;"><span class="nombre" style="font-weight:700;">Total del mes</span><span class="monto ganado" style="font-size:16px;">$${m.total_bonos}</span></div>

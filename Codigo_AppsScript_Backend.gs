@@ -295,13 +295,19 @@ function handleConfirmarTurno_(body) {
     return json({ok:false, error:'NIP incorrecto'});
   }
 
-  // El turno (día/noche) no lo manda el QR de NovaPOS — se deduce de la
-  // hora de apertura (ver detectarTurno_/BONOS_DEFAULTS). El bono de
-  // Puntualidad solo se checa en los 2 extremos del día que sí tienen
-  // horario oficial acordado: la apertura del turno día (8:00) y el cierre
-  // del turno noche (20:00) — el relevo de en medio todavía no tiene una
-  // hora fija acordada.
-  const turno = detectarTurno_(body.hora_apertura);
+  // El turno (día/noche) no lo manda el QR de NovaPOS. Primero se busca en
+  // "turnos_asignados" (quién tiene asignado cada turno, ver más abajo) —
+  // es más confiable porque los 2 turnos siempre son las mismas 2 personas
+  // (salvo que alguien renuncie). Si ese día no hay ninguna asignación
+  // vigente para este empleado (roster todavía no capturado, o suplencia
+  // sin registrar), se cae al viejo criterio por hora de apertura.
+  const asignacionActual = body.fecha ? asignacionVigenteEn_(asignacionesTurno_(), empleado.id, new Date(body.fecha)) : null;
+  const turno = asignacionActual ? asignacionActual.turno : detectarTurno_(body.hora_apertura);
+  // El bono de Puntualidad solo se checa en los 2 extremos del día que sí
+  // tienen horario oficial acordado: la apertura del turno día (8:00) y el
+  // cierre del turno noche (20:00) — el relevo de en medio (cierre del
+  // turno día = apertura del turno noche, es el mismo momento) no tiene una
+  // hora fija propia.
   const tolerancia = Number(getBonoConfig_('bono_puntualidad_tolerancia_min'));
   const retardoApertura = turno === 'dia'
     && minutosDeRetraso_(body.hora_apertura, getBonoConfig_('bono_puntualidad_apertura_hhmm')) > tolerancia;
@@ -661,6 +667,47 @@ function filaAObjeto_(headers, row) {
   return Object.fromEntries(headers.map((h,i) => [h, row[i]]));
 }
 
+// "YYYY-MM-DD" a partir de cualquier valor de fecha — una celda de Google
+// Sheets con pinta de fecha ("2026-09-10") se puede guardar como texto o
+// autoconvertir a un valor de fecha real según el formato de la columna; a
+// diferencia de recortar el string con .slice(0,10), esto da el mismo
+// resultado sin importar cuál de los dos sea.
+function fechaYMD_(valor) {
+  return Utilities.formatDate(new Date(valor), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+// lunes=0 ... domingo=6 — mismo criterio que ya usaba resumenSemana_/
+// inicioSemana_, para que "dia_descanso" en "turnos_asignados" se
+// interprete igual en todos lados.
+function diaSemanaLunes0_(fecha) {
+  return (new Date(fecha).getDay() + 6) % 7;
+}
+
+// Todas las filas de "turnos_asignados" (quién tiene cada turno, y de qué
+// fecha a qué fecha — "hasta" en blanco significa "sigue vigente"). Se lee
+// completa cada vez porque son pocas filas (2 turnos, más el historial de
+// cuando alguien renuncia); no hace falta indexarla.
+function asignacionesTurno_() {
+  const sheet = getSheet('turnos_asignados');
+  const headers = ensureHeaders_(sheet, 'turnos_asignados');
+  const rows = sheet.getDataRange().getValues();
+  return rows.slice(1)
+    .filter(r => r.some(c => c !== '' && c !== null))
+    .map(r => filaAObjeto_(headers, r));
+}
+
+// Qué asignación (turno + día de descanso) tenía vigente este empleado en
+// una fecha dada — null si ese día no hay ninguna fila que lo cubra (roster
+// no capturado todavía, o la fecha cae fuera de cualquier rango desde/hasta).
+function asignacionVigenteEn_(asignaciones, codigoEmpleado, fecha) {
+  return asignaciones.find(a => {
+    if (String(a.codigoEmpleado) !== String(codigoEmpleado)) return false;
+    const desde = a.desde ? new Date(a.desde) : new Date(0);
+    const hasta = a.hasta ? new Date(a.hasta) : null;
+    return fecha >= desde && (!hasta || fecha <= hasta);
+  });
+}
+
 // Todos los turnos confirmados (de cualquier empleado) en un rango de
 // fechas — usa "fecha" (la del turno) y no "confirmado_en" (cuándo se
 // mandó el acuse), que es lo que se necesita para agrupar por semana/mes
@@ -816,11 +863,6 @@ function resumenMes_(codigoEmpleado) {
   // semana calendario — más de 1 en UNA sola semana lo pierde. Los
   // retardos marcados "retardo_justificado" a mano por el dueño (excepción
   // de relevo) no cuentan.
-  // ⚠️ Candado adicional acordado: además de esto, "0 faltas" (inasistencias)
-  // en el mes — hoy no existe ningún horario/roster de a quién le toca
-  // trabajar qué día, así que no se puede distinguir "faltó" de "no le
-  // tocaba" con los datos que hay. Falta esa fuente de datos para aplicar
-  // este candado; por ahora el bono solo evalúa la parte de retardos.
   const toleranciaRetardosSemana = Number(getBonoConfig_('bono_puntualidad_retardos_max_semana'));
   const retardosPorSemana = {};
   misTurnos.forEach(t => {
@@ -830,7 +872,33 @@ function resumenMes_(codigoEmpleado) {
     const semana = inicioSemana_(t.fecha);
     retardosPorSemana[semana] = (retardosPorSemana[semana] || 0) + 1;
   });
-  const cumplePuntualidad = !Object.values(retardosPorSemana).some(n => n > toleranciaRetardosSemana);
+
+  // Candado de "0 faltas": un día "esperado" es un día del mes (hasta hoy,
+  // nunca días futuros) en que, según "turnos_asignados", a este empleado
+  // le tocaba trabajar y no era su día de descanso. Si ese día no tiene un
+  // turno confirmado en legado_turnos, es una falta — y una sola falta en
+  // el mes hace perder el bono, sin importar los retardos. Si no hay
+  // ninguna asignación capturada para este empleado, no se puede evaluar
+  // (se deja pasar, en vez de inventar una falta que no se puede probar).
+  const misAsignaciones = asignacionesTurno_().filter(a => String(a.codigoEmpleado) === String(codigoEmpleado));
+  const fechasConTurno = new Set(misTurnos.map(t => fechaYMD_(t.fecha)));
+  let faltas = 0;
+  if (misAsignaciones.length) {
+    const finEvaluacion = new Date(anio, mesNum - 1, hoy.getDate() + 1); // nunca evalúa días futuros
+    for (let d = new Date(inicio); d < finEvaluacion; d.setDate(d.getDate() + 1)) {
+      const asignacion = asignacionVigenteEn_(misAsignaciones, codigoEmpleado, d);
+      if (!asignacion) continue; // sin asignación vigente ese día — no se puede saber si le tocaba
+      // "" (dia_descanso todavía no capturado) NO debe leerse como "0"
+      // (lunes) — Number('') es 0 en JS, y eso pondría a todos con el
+      // campo en blanco un día de descanso falso los lunes.
+      const diaDescanso = asignacion.dia_descanso === '' || asignacion.dia_descanso === undefined || asignacion.dia_descanso === null
+        ? null : Number(asignacion.dia_descanso);
+      if (diaDescanso !== null && diaSemanaLunes0_(d) === diaDescanso) continue; // su día de descanso
+      if (!fechasConTurno.has(fechaYMD_(d))) faltas++;
+    }
+  }
+
+  const cumplePuntualidad = faltas === 0 && !Object.values(retardosPorSemana).some(n => n > toleranciaRetardosSemana);
 
   // ---------- Bono Caja ----------
   // Tolerancia de $100 de faltante (no sobrante) en TODO el mes, y no más
@@ -857,7 +925,8 @@ function resumenMes_(codigoEmpleado) {
   // queda en $0 aunque aquí ya se calcula y expone el total real del mes.
   const mermaPorDia = {};
   legadoTurnosEntre_(inicio, fin).forEach(t => {
-    mermaPorDia[t.fecha] = (mermaPorDia[t.fecha] || 0) + (Number(t.merma)||0);
+    const clave = fechaYMD_(t.fecha);
+    mermaPorDia[clave] = (mermaPorDia[clave] || 0) + (Number(t.merma)||0);
   });
   const mermaTotalMes = Object.values(mermaPorDia).reduce((s,n) => s+n, 0);
   const tolInventarioMensual = getBonoConfig_('bono_inventario_tolerancia_mensual');
@@ -872,6 +941,7 @@ function resumenMes_(codigoEmpleado) {
 
   const pendientes = [];
   if (!tolInventarioDefinida) pendientes.push('Bono Inventario: falta definir cuánta merma combinada (de los 2 turnos) se tolera al mes.');
+  if (!misAsignaciones.length) pendientes.push('Bono Puntualidad: agrega tu turno y tu día de descanso en la hoja "turnos_asignados" para que se pueda revisar el candado de "0 faltas".');
 
   return {
     mes: hoy.toLocaleDateString('es-MX', { month: 'long' }),
@@ -882,6 +952,7 @@ function resumenMes_(codigoEmpleado) {
     bono_caja,
     bono_inventario,
     total_bonos: bono_ventas + bono_puntualidad + bono_caja + bono_inventario,
+    dias_falta: faltas,
     dias_con_meta: diasConMeta,
     dias_meta_requeridos: diasMetaRequeridos,
     merma_total_mes: Math.round(mermaTotalMes * 100) / 100,
@@ -1057,6 +1128,23 @@ const SHEET_HEADERS = {
   // meta_sugerida tal cual; si no, se usa lo que capture en "meta_manual".
   // Ver metaFinalDe_/resumenMes_ en el código.
   metas_ventas: ['id','mes','turno','meta_sugerida','aceptada','meta_manual','generado_en'],
+  // Quién tiene asignado cada uno de los 2 turnos (día/noche) y su día de
+  // descanso — el DUEÑO la captura y mantiene a mano. Siempre son las
+  // mismas 2 personas salvo que alguien renuncie: en ese caso, en vez de
+  // editar la fila existente, ciérrala poniéndole "hasta" (el último día
+  // que trabajó) y agrega una fila nueva para quien la sustituye con su
+  // propio "desde" — así el historial de meses anteriores no cambia.
+  // "hasta" en blanco = sigue vigente. "dia_descanso" es un número
+  // lunes=0 ... domingo=6 (ej. domingo=6). Ejemplo: el empleado del turno
+  // noche descansa los domingos — su turno empieza domingo a las 20:00 y
+  // termina lunes a las 8:00, así que ese domingo simplemente no habrá
+  // ningún turno confirmado con fecha domingo, y no debe contar como falta.
+  // Se usa para: (1) detectar el turno de cada confirmación con más
+  // confianza que el criterio por hora (ver handleConfirmarTurno_), y (2)
+  // el candado de "0 faltas" del Bono Puntualidad (ver resumenMes_): un día
+  // que le tocaba trabajar (no es su dia_descanso) y no tiene turno
+  // confirmado en legado_turnos cuenta como falta.
+  turnos_asignados: ['id','turno','codigoEmpleado','dia_descanso','desde','hasta'],
 };
 
 function getSheet(name) {
