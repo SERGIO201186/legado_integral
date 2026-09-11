@@ -794,6 +794,8 @@ async function cargarProgreso() {
     <div class="bono"><span class="nombre">Bono Puntualidad (faltas del mes: ${m.dias_falta})</span><span class="monto ${m.bono_puntualidad ? 'ganado' : 'no'}">$${m.bono_puntualidad}</span></div>
     <div class="bono"><span class="nombre">Bono Caja</span><span class="monto ${m.bono_caja ? 'ganado' : 'no'}">$${m.bono_caja}</span></div>
     <div class="bono"><span class="nombre">Bono Inventario (merma combinada del mes: $${m.merma_total_mes})</span><span class="monto ${m.bono_inventario ? 'ganado' : 'no'}">$${m.bono_inventario}</span></div>
+    <div class="bono"><span class="nombre">Avisos de servicio funerario (${m.avisos_funerarios_count})</span><span class="monto ${m.bono_avisos_funerarios ? 'ganado' : 'no'}">$${m.bono_avisos_funerarios}</span></div>
+    <div class="bono"><span class="nombre">Servicios directos recomendados (${m.servicios_recomendados_count})</span><span class="monto ${m.bono_servicios_recomendados ? 'ganado' : 'no'}">$${m.bono_servicios_recomendados}</span></div>
     <div class="bono" style="border-top:1.5px solid #E4DDD1;padding-top:12px;margin-top:4px;"><span class="nombre" style="font-weight:700;">Total del mes</span><span class="monto ganado" style="font-size:16px;">$${m.total_bonos}</span></div>
   </div>`;
 

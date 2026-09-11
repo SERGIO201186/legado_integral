@@ -639,6 +639,16 @@ const BONOS_DEFAULTS = {
   // resumenMes_) se tolera al mes. Sin ese número no se puede decidir si se
   // gana el bono o no — se calcula el total real para que el dueño lo vea,
   // pero el bono se queda en $0 hasta que se capture ese valor en "config".
+
+  // Bonos por referido funerario — independientes de los 4 de arriba (no
+  // cuentan para "elegible_premio_maximo"), sin tope: se pagan por cada
+  // servicio que el DUEÑO registre a mano en la hoja "servicios_funerarios"
+  // (ver serviciosFunerariosDelEmpleadoEntre_/resumenMes_). Son el monto por
+  // defecto cuando la fila no trae su propio "monto" — una fila SÍ puede
+  // traer un monto distinto (por si el monto oficial cambia con el tiempo,
+  // los registros viejos no deben moverse).
+  bono_aviso_funerario_monto: 200,     // "Aviso de servicio funerario": Funerales Huerta avisó y el servicio se realizó, por referencia de este empleado.
+  bono_servicio_recomendado_monto: 700, // "Servicio directo recomendado": el cliente llegó directo con la referencia del empleado, sin que el asesor hiciera labor de venta.
 };
 
 function getBonoConfig_(key) {
@@ -681,6 +691,32 @@ function fechaYMD_(valor) {
 // interprete igual en todos lados.
 function diaSemanaLunes0_(fecha) {
   return (new Date(fecha).getDay() + 6) % 7;
+}
+
+// Servicios funerarios (aviso o recomendado, ver SHEET_HEADERS) que el
+// dueño ya registró para este empleado dentro de un rango de fechas.
+function serviciosFunerariosDelEmpleadoEntre_(codigoEmpleado, desde, hasta) {
+  const sheet = getSheet('servicios_funerarios');
+  const headers = ensureHeaders_(sheet, 'servicios_funerarios');
+  const rows = sheet.getDataRange().getValues();
+  const fechaCol = headers.indexOf('fecha');
+  const codCol = headers.indexOf('codigoEmpleado');
+  return rows.slice(1)
+    .filter(r => r[fechaCol] && String(r[codCol]) === String(codigoEmpleado))
+    .map(r => filaAObjeto_(headers, r))
+    .filter(s => { const d = new Date(s.fecha); return d >= desde && d < hasta; });
+}
+
+// El monto lo trae la propia fila normalmente, pero si el dueño la deja en
+// blanco (captura rápida: solo tipo/fecha/empleado/referencia) se usa el
+// monto vigente en "config" según el tipo — así un cambio futuro del monto
+// oficial no obliga a editar filas viejas ni a repetirlo en cada una.
+function montoServicioFunerario_(registro) {
+  if (registro.monto !== '' && registro.monto !== undefined && registro.monto !== null && !isNaN(Number(registro.monto))) {
+    return Number(registro.monto);
+  }
+  const tipo = String(registro.tipo || '').trim().toLowerCase();
+  return Number(getBonoConfig_(tipo === 'aviso' ? 'bono_aviso_funerario_monto' : 'bono_servicio_recomendado_monto')) || 0;
 }
 
 // Todas las filas de "turnos_asignados" (quién tiene cada turno, y de qué
@@ -939,6 +975,18 @@ function resumenMes_(codigoEmpleado) {
   const tolInventarioDefinida = tolInventarioMensual !== undefined && tolInventarioMensual !== '';
   const cumpleInventario = tolInventarioDefinida && mermaTotalMes <= Number(tolInventarioMensual);
 
+  // ---------- Bonos por referido funerario ----------
+  // Independientes de los 4 de arriba: no cuentan para "elegible_premio_
+  // maximo" (ese sigue siendo solo Ventas+Puntualidad+Caja+Inventario) y no
+  // tienen tope — se suman todos los que el dueño haya registrado este mes
+  // en "servicios_funerarios" para este empleado.
+  const serviciosDelMes = serviciosFunerariosDelEmpleadoEntre_(codigoEmpleado, inicio, fin);
+  const tipoDe_ = s => String(s.tipo || '').trim().toLowerCase();
+  const avisosDelMes = serviciosDelMes.filter(s => tipoDe_(s) === 'aviso');
+  const recomendadosDelMes = serviciosDelMes.filter(s => tipoDe_(s) === 'recomendado');
+  const bono_avisos_funerarios = avisosDelMes.reduce((s,r) => s + montoServicioFunerario_(r), 0);
+  const bono_servicios_recomendados = recomendadosDelMes.reduce((s,r) => s + montoServicioFunerario_(r), 0);
+
   const bono_ventas = cumpleVentas ? Number(getBonoConfig_('bono_ventas_monto')) : 0;
   const bono_puntualidad = cumplePuntualidad ? Number(getBonoConfig_('bono_puntualidad_monto')) : 0;
   const bono_caja = cumpleCaja ? Number(getBonoConfig_('bono_caja_monto')) : 0;
@@ -957,7 +1005,11 @@ function resumenMes_(codigoEmpleado) {
     bono_puntualidad,
     bono_caja,
     bono_inventario,
-    total_bonos: bono_ventas + bono_puntualidad + bono_caja + bono_inventario,
+    bono_avisos_funerarios,
+    bono_servicios_recomendados,
+    avisos_funerarios_count: avisosDelMes.length,
+    servicios_recomendados_count: recomendadosDelMes.length,
+    total_bonos: bono_ventas + bono_puntualidad + bono_caja + bono_inventario + bono_avisos_funerarios + bono_servicios_recomendados,
     dias_falta: faltas,
     dias_con_meta: diasConMeta,
     dias_meta_requeridos: diasMetaRequeridos,
@@ -1154,6 +1206,22 @@ const SHEET_HEADERS = {
   // que le tocaba trabajar (no es su dia_descanso) y no tiene turno
   // confirmado en legado_turnos cuenta como falta.
   turnos_asignados: ['id','turno','codigoEmpleado','dia_descanso','desde','hasta'],
+  // Bonos por referido funerario — el DUEÑO la captura a mano, no hay forma
+  // de verificarlos desde la app (dependen de que Funerales Huerta confirme
+  // el servicio, o de que el cliente llegue sin que el asesor haya hecho
+  // ninguna labor de venta). "tipo": "aviso" ($200, Bono Aviso de Servicio
+  // Funerario — cada servicio efectivo de Funerales Huerta que dio aviso
+  // por referencia de este empleado) o "recomendado" ($700, Bono Servicio
+  // Directo Recomendado — el cliente llegó directo con la referencia del
+  // empleado, sin labor de venta del asesor). "referencia" es texto libre
+  // (nombre del finado/cliente o folio de Funerales Huerta) para poder
+  // auditar y no duplicar el mismo servicio dos veces. "monto" puede
+  // dejarse en blanco para usar el monto vigente en "config"
+  // (bono_aviso_funerario_monto/bono_servicio_recomendado_monto) — ver
+  // montoServicioFunerario_/resumenMes_. Son bonos independientes de los 4
+  // operativos de arriba: se suman al total del mes pero no cuentan para
+  // "elegible_premio_maximo".
+  servicios_funerarios: ['id','tipo','codigoEmpleado','nombreEmpleado','fecha','referencia','monto','capturado_en'],
 };
 
 function getSheet(name) {
